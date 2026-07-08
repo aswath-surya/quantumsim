@@ -29,6 +29,10 @@ dependencies = [
 [project.optional-dependencies]
 # Better/faster quimb contraction-path search.
 fast = ["kahypar", "optuna", "cotengra"]
+# Pauli-propagation wrapper around PauliPropagation.jl (boots Julia via juliacall).
+# After install, run once:
+#   python -c "from proxysim.pauliprop import ensure_installed; ensure_installed()"
+pauliprop = ["juliacall"]
 # GPU acceleration (CUDA 12.x). Platform-specific; install manually as needed.
 # gpu = ["cupy-cuda12x", "qiskit-aer-gpu", "cuquantum-python"]
 dev = ["pytest"]

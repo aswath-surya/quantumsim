@@ -11,10 +11,13 @@ Motivated by Merkel et al., "When Clifford benchmarks are sufficient"
 (stabilizer), while their non-Clifford targets need TN/statevector methods.
 """
 
-from .circuit import Circuit, Gate, lnn_brickwork
+from .circuit import Circuit, Gate, lnn_brickwork, brickwork_magic
 from .runner import run_all, ComparisonReport
 from .parallel import sample_parallel
 from . import noise
+from .noise import NoiseModel
+from .pauliprop import JuliaPauliPropagator
+from .pauliprop_validator import PauliPropagator, expectation as pp_expectation
 from .backends import (
     TensorNetworkBackend,
     StatevectorBackend,
@@ -29,10 +32,15 @@ __all__ = [
     "Circuit",
     "Gate",
     "lnn_brickwork",
+    "brickwork_magic",
     "run_all",
     "ComparisonReport",
     "sample_parallel",
     "noise",
+    "NoiseModel",
+    "JuliaPauliPropagator",
+    "PauliPropagator",
+    "pp_expectation",
     "TensorNetworkBackend",
     "StatevectorBackend",
     "StabilizerBackend",

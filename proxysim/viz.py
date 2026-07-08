@@ -78,23 +78,63 @@ def plot_distribution(report, path: str, top_k: int = 12):
     return path
 
 
-def panel(circuit, report, outdir: str, prefix: str = "viz"):
-    """Make the three images and stitch them into one combined panel PNG."""
+def plot_pauliprop(circuit, path: str, observable=None, top: int = 48):
+    """Heisenberg Pauli-propagate an observable and plot its |coefficient| spread.
+
+    For a Clifford circuit this is a single Pauli (|c|=1); with magic the observable
+    fans out into many Pauli strings with a range of coefficients -- that spread is
+    what the plot shows. Uses the Julia-free validator (same result as the wrapper).
+    """
+    from .pauliprop_validator import propagate
+
+    obs = observable or "Z" * circuit.n_qubits
+    terms = propagate(circuit, obs)
+    mags = sorted((abs(c) for c in terms.values() if abs(c) > 1e-12), reverse=True)
+    shown = mags[:top]
+    fig, ax = plt.subplots(figsize=(9, 3.6))
+    ax.bar(range(len(shown)), shown, color="#2171b5", width=0.9)
+    ax.set_yscale("log")
+    if shown:
+        ax.set_ylim(bottom=min(shown) * 0.6, top=max(shown) * 1.4)
+    ax.set_xlabel("Pauli string  (sorted by coefficient magnitude)")
+    ax.set_ylabel(r"$|c_k|$")
+    ax.set_title(rf"Pauli propagation of $\langle {obs} \rangle$:  "
+                 f"{len(mags)} Pauli strings"
+                 + (f"  (showing top {top})" if len(mags) > top else ""),
+                 fontsize=10)
+    ax.grid(True, axis="y", which="both", alpha=0.15)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
+def panel(circuit, report, outdir: str, prefix: str = "viz", pauliprop: bool = True):
+    """Make the images and stitch them into one combined panel PNG.
+
+    Rows: qiskit circuit, quimb tensor network, output distribution, and (when
+    ``pauliprop``) the Heisenberg Pauli-propagation coefficient spread.
+    """
     os.makedirs(outdir, exist_ok=True)
     paths = {
         "circuit": draw_qiskit_circuit(circuit, os.path.join(outdir, f"{prefix}_circuit_qiskit.png")),
         "tn": draw_quimb_tn(circuit, os.path.join(outdir, f"{prefix}_tn_quimb.png")),
         "dist": plot_distribution(report, os.path.join(outdir, f"{prefix}_distribution.png")),
     }
+    keys = ["circuit", "tn", "dist"]
+    titles = ["qiskit circuit", "quimb tensor network", "output distribution"]
+    if pauliprop:
+        paths["pauliprop"] = plot_pauliprop(circuit, os.path.join(outdir, f"{prefix}_pauliprop.png"))
+        keys.append("pauliprop")
+        titles.append("Pauli propagation (coefficient spread)")
+
     combined = os.path.join(outdir, f"{prefix}_panel.png")
-    imgs = [plt.imread(paths[k]) for k in ("circuit", "tn", "dist")]
-    titles = ["qiskit circuit", "quimb tensor network", "exact output distribution"]
-    fig, axes = plt.subplots(3, 1, figsize=(11, 16))
-    for ax, im, t in zip(axes, imgs, titles):
+    imgs = [plt.imread(paths[k]) for k in keys]
+    fig, axes = plt.subplots(len(keys), 1, figsize=(11, 5.2 * len(keys)))
+    for ax, im in zip(axes, imgs):   # each sub-image carries its own title
         ax.imshow(im)
-        ax.set_title(t, fontsize=12)
         ax.axis("off")
-    fig.suptitle(f"proxysim - {circuit.name}", fontsize=14)
+    fig.suptitle(f"proxysim - {circuit.name}", fontsize=14, y=0.995)
     fig.tight_layout()
     fig.savefig(combined, dpi=130)
     plt.close(fig)

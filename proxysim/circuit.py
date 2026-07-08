@@ -144,6 +144,23 @@ class Circuit:
                 frontier[q] = t
         return max(frontier) if frontier else 0
 
+    def layers(self):
+        """Greedy ASAP partition into parallel layers (each a list of gates).
+
+        Used e.g. to find which qubits are *idle* in a given layer (for idling
+        noise): a qubit is idle in layer L if no gate in that layer touches it.
+        """
+        frontier = [0] * self.n_qubits
+        out = []
+        for g in self.gates:
+            t = max(frontier[q] for q in g.qubits)
+            for q in g.qubits:
+                frontier[q] = t + 1
+            while len(out) <= t:
+                out.append([])
+            out[t].append(g)
+        return out
+
     def __len__(self) -> int:
         return len(self.gates)
 
@@ -240,4 +257,46 @@ def lnn_brickwork(
             circ.add(twoq, a, b)
         one_qubit_layer()
 
+    return circ
+
+
+def brickwork_magic(n: int, n_cycles: int, n_t: int = 0, seed: int = 0,
+                    twoq: str = "cz", initial_h: bool = True) -> Circuit:
+    """A Clifford brickwork with ``n_t`` injected "magic" gates.
+
+    The magic gates are pi/4 rotations about a random axis (T-like: T = RZ(pi/4)).
+    ``n_t = 0`` is a pure Clifford circuit -- Pauli propagation keeps the
+    observable a single Pauli string.  Each magic gate that anticommutes with the
+    propagated observable *branches* it into two terms scaled by cos/sin(pi/4)=
+    1/sqrt(2), so the number of Pauli strings grows and their coefficients spread
+    over the values 2^(-k/2). More magic => more non-stabilizerness => a broader
+    coefficient distribution.
+    """
+    import random
+
+    rng = random.Random(seed)
+    circ = Circuit(n, name=f"brickwork_magic_n{n}_c{n_cycles}_t{n_t}")
+    oneq_slots = []
+
+    def one_qubit_layer():
+        for q in range(n):
+            circ.add(rng.choice(_RANDOM_CLIFFORDS), q)
+            oneq_slots.append(len(circ.gates) - 1)
+
+    if initial_h:
+        for q in range(n):
+            circ.h(q)
+    for _ in range(n_cycles):
+        for a, b in _even_pairs(n):
+            circ.add(twoq, a, b)
+        one_qubit_layer()
+        for a, b in _odd_pairs(n):
+            circ.add(twoq, a, b)
+        one_qubit_layer()
+
+    n_t = min(n_t, len(oneq_slots))
+    for idx in rng.sample(oneq_slots, n_t):
+        q = circ.gates[idx].qubits[0]
+        axis = rng.choice(["rx", "ry", "rz"])
+        circ.gates[idx] = Gate(axis, (q,), (math.pi / 4,))
     return circ
