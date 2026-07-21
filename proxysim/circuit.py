@@ -144,6 +144,32 @@ class Circuit:
                 frontier[q] = t
         return max(frontier) if frontier else 0
 
+    def inverse(self) -> "Circuit":
+        """Return the inverse circuit (gates reversed and individually inverted).
+
+        Appending a circuit's inverse gives a 'mirror' circuit whose ideal output
+        is |0...0>, which makes the error resolvable (1 - P(0...0)) at any width.
+        """
+        inv_name = {
+            "h": "h", "x": "x", "y": "y", "z": "z", "i": "i",
+            "s": "sdg", "sdg": "s", "sx": "sxdg", "sxdg": "sx", "t": "tdg", "tdg": "t",
+            "cz": "cz", "cx": "cx", "cnot": "cnot", "cy": "cy", "swap": "swap",
+        }
+        out = Circuit(self.n_qubits, name=self.name + "_inv")
+        for g in reversed(self.gates):
+            if g.name in ("rx", "ry", "rz", "p"):
+                out.gates.append(Gate(g.name, g.qubits, tuple(-p for p in g.params)))
+            else:
+                out.gates.append(Gate(inv_name[g.name], g.qubits, g.params))
+        return out
+
+    def mirror(self) -> "Circuit":
+        """This circuit followed by its inverse (U.U^-1). Ideal output is |0...0>,
+        so the error is 1 - P(0...0) and stays resolvable at any width."""
+        out = Circuit(self.n_qubits, name=self.name + "_mirror")
+        out.gates = list(self.gates) + self.inverse().gates
+        return out
+
     def layers(self):
         """Greedy ASAP partition into parallel layers (each a list of gates).
 
@@ -260,6 +286,40 @@ def lnn_brickwork(
     return circ
 
 
+def clifford_entropy_circuit(n: int, entropy_bits: int, depth: int = 6,
+                             seed: int = 0) -> Circuit:
+    """A Clifford circuit whose ideal Z-basis distribution has EXACTLY
+    ``entropy_bits`` bits of Shannon entropy (uniform over 2^entropy_bits
+    correlated bitstrings).  Not a mirror/echo -- the output is genuinely spread.
+
+    How the entropy is fixed: ``entropy_bits`` Hadamards on |0> qubits inject that
+    many free bits.  Everything after that preserves the Z-basis support
+    dimension, so the entropy can't drift:
+      * CNOT -- a linear bijection on bitstrings; spreads/correlates the free bits
+        across qubits without changing the coset dimension.
+      * CZ, S, S-dagger, Z -- diagonal, so the Z-basis probabilities are untouched.
+      * X -- just shifts the coset (an affine offset), dimension unchanged.
+    """
+    import random
+
+    rng = random.Random(seed)
+    k = max(0, min(entropy_bits, n))
+    circ = Circuit(n, name=f"clifford_entropy_n{n}_H{k}_d{depth}")
+
+    for q in rng.sample(range(n), k):          # inject exactly k free bits
+        circ.h(q)
+
+    dim_preserving = ["i", "s", "sdg", "z", "x"]
+    for d in range(depth):
+        pairs = _even_pairs(n) if d % 2 == 0 else _odd_pairs(n)
+        for a, b in pairs:
+            circ.cx(a, b)                      # spread the free bits (bijective)
+            circ.cz(a, b)                      # phases only (no effect on Z dist)
+        for q in range(n):
+            circ.add(rng.choice(dim_preserving), q)
+    return circ
+
+
 def brickwork_magic(n: int, n_cycles: int, n_t: int = 0, seed: int = 0,
                     twoq: str = "cz", initial_h: bool = True) -> Circuit:
     """A Clifford brickwork with ``n_t`` injected "magic" gates.
@@ -300,3 +360,63 @@ def brickwork_magic(n: int, n_cycles: int, n_t: int = 0, seed: int = 0,
         axis = rng.choice(["rx", "ry", "rz"])
         circ.gates[idx] = Gate(axis, (q,), (math.pi / 4,))
     return circ
+
+
+# ---------------------------------------------------------------------------
+# Canonical benchmarking / bounding brickwork (shared by the example scripts)
+# ---------------------------------------------------------------------------
+# Named single-qubit gate sets.
+GATE_SETS = {
+    "clifford": ["h", "s", "sdg", "x", "y", "z", "sx", "sxdg"],  # random Clifford
+    "structured": ["i", "h", "x"],                                # restricted set
+    "dim_preserving": ["i", "s", "sdg", "z", "x"],                # keep Z-basis support dim
+}
+
+
+def even_pairs(n):
+    """Even nearest-neighbour pairs: (0,1) (2,3) ..."""
+    return _even_pairs(n)
+
+
+def odd_pairs(n):
+    """Odd nearest-neighbour pairs: (1,2) (3,4) ..."""
+    return _odd_pairs(n)
+
+
+def bench_brickwork(n, n_cycles, cycles, oneq="clifford", twoq="cz", seed=0,
+                    final_oneq=False, n_hadamards=0):
+    """Canonical benchmarking / bounding brickwork.
+
+    Repeats ``n_cycles`` times: for each entangling layer ``pairs`` in ``cycles``,
+    a random single-qubit layer (drawn from the ``oneq`` gate set) then that layer's
+    two-qubit gates (``twoq``). Every entangling layer in ``cycles`` is a distinct
+    'cycle' that recurs ``n_cycles`` times -- matching what cycle benchmarking sees.
+
+    ``oneq``          : name in GATE_SETS ('clifford'/'structured'/'dim_preserving')
+                        or an explicit list of gate names.
+    ``n_hadamards``   : prepend H on this many random qubits (inject exactly this many
+                        bits of output entropy when oneq='dim_preserving', twoq='cx').
+    ``final_oneq``    : add a trailing single-qubit layer (non-mirror test circuits).
+    """
+    import random
+
+    rng = random.Random(seed)
+    gates = GATE_SETS[oneq] if isinstance(oneq, str) else list(oneq)
+    tag = oneq if isinstance(oneq, str) else "custom"
+    c = Circuit(n, name=f"brickwork_{tag}_n{n}_c{n_cycles}_{twoq}")
+
+    for q in rng.sample(range(n), min(n_hadamards, n)):
+        c.h(q)
+
+    def layer():
+        for q in range(n):
+            c.add(rng.choice(gates), q)
+
+    for _ in range(n_cycles):
+        for pairs in cycles:
+            layer()
+            for a, b in pairs:
+                c.add(twoq, a, b)
+    if final_oneq:
+        layer()
+    return c

@@ -1,242 +1,172 @@
 # proxysim
 
-A small toolkit for running the *same* quantum circuit through several classical
-simulators and seeing where they agree, how they scale, and what they cost. It
-grew out of reading Merkel et al., ["When Clifford benchmarks are
-sufficient"](https://arxiv.org/abs/2503.05943), while thinking about how to bound
-the performance of near-term quantum computers without an exponential classical
-bill.
+A multi-backend quantum-circuit simulator and benchmarking toolkit. The same
+backend-agnostic circuit runs on a tensor-network (quimb MPS, optionally on GPU),
+an exact statevector (qiskit), or a stabilizer (stim) backend, plus a
+Pauli-propagation expectation-value engine — and on top of that it can bound
+circuit error from cycle benchmarking. It grew out of Merkel et al., ["When
+Clifford benchmarks are sufficient"](https://arxiv.org/abs/2503.05943): Clifford
+"proxy" circuits are cheap to simulate (stabilizer), while their non-Clifford
+targets need tensor-network or statevector methods.
 
-The package name is `proxysim` (the repository is `quantumsim`).
+Package name: `proxysim`. Repository: `quantumsim`.
 
-## The three backends
+## One entry point
 
-Each backend takes a backend-agnostic circuit and produces the same thing: an
-output bitstring distribution and a timing. They get there by completely
-different routes, which is the whole point.
+Everything is reachable from `simulate(circuit, simulator=..., output=...)`, which
+dispatches over two axes:
 
-| backend | how it works | scales to | works on |
-|---|---|---|---|
-| `tensornetwork(quimb-MPS)` | matrix-product state, `swap+split` contraction | bounded-entanglement circuits | any gate |
-| `statevector(qiskit)` | exact dense statevector | ~24 qubits (2ⁿ memory) | any gate |
-| `stabilizer(stim)` | stabilizer tableau, or stim's native sampler | thousands of qubits when *sampling* | Clifford only |
+| axis | values |
+|---|---|
+| `simulator` | `statevector` · `tensornetwork` · `stabilizer` · `pauliprop` · `auto` |
+| `output` | `distribution` · `samples` · `survival` · `expectation` |
 
-The framing comes straight from the Merkel paper. A Clifford "proxy" circuit is
-efficiently simulable on a stabilizer backend, and it can stand in for a
-non-Clifford "target" that only tensor-network or statevector methods can touch.
-proxysim lets you run both and check they line up.
+with flags `noise` (a `NoiseModel`), `gpu` (tensor network on cupy), `max_bond`
+(MPS truncation), and `parallel` / `n_workers`. `auto` picks the stabilizer backend
+for Clifford circuits and the tensor-network backend otherwise.
 
-## Exact by default
+```python
+from proxysim import bench_brickwork, even_pairs, odd_pairs, NoiseModel, simulate
 
-These circuits are noiseless and unitary, so the output is deterministic:
-`P(x) = |⟨x|ψ⟩|²`. There is no reason to Monte-Carlo it. Each backend computes
-that distribution *once* and we compare them. Drawing shots only adds sampling
-noise to an answer we can already get exactly, so `run_all` returns the exact
-distribution by default and treats shots as an opt-in.
-
-Because the three methods are unrelated, their agreement is a real check rather
-than a tautology. On a 5-qubit Clifford brickwork they line up to floating-point
-precision:
-
+c = bench_brickwork(12, 3, [even_pairs(12), odd_pairs(12)], oneq="clifford").mirror()
+simulate(c, "stabilizer", "distribution")                 # exact |<x|psi>|^2
+simulate(c, "stabilizer", "survival", noise=NoiseModel(True, p2=5e-3))   # P(0...0) under noise
+simulate(c, "tensornetwork", "survival", noise=..., max_bond=8, parallel=True)  # MPS trajectories, fanned out
+simulate(c, output="expectation", observable="Z___________")            # Pauli propagation
 ```
-backend                     exact (ms)  support    TVD@ref
-tensornetwork(quimb-MPS)       123.779       16    7.4e-16
-statevector(qiskit)              5.141       16    0.0e+00
-stabilizer(stim)                 9.021       16    1.1e-15
-```
-
-Shots (`run_all(circuit, shots=N)`) become genuinely necessary once you turn on
-noise, because a mixed state can't be read off as a single `|⟨x|ψ⟩|²`. That is
-what the noise model below is for.
-
-![overview panel](docs/viz_panel.png)
-
-The panel above shows a small circuit four ways: the qiskit diagram, the quimb
-tensor network, the exact output distribution (the backends coincide), and the
-Pauli-propagation coefficient spread. Because this particular circuit has a few
-magic gates it is non-Clifford, so stim sits it out automatically, which is
-exactly the behavior you want.
 
 ## Install
 
-The package is a normal editable install with no hard-coded paths, so it runs
-the same from a fresh checkout on any machine:
-
 ```bash
-git clone https://github.com/aswath-surya/quantumsim.git
-cd quantumsim
-python -m venv .venv
-# Windows:  .venv\Scripts\activate      macOS/Linux:  source .venv/bin/activate
+git clone https://github.com/aswath-surya/quantumsim.git && cd quantumsim
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
-A plain `pip install -e .` pulls quimb, qiskit, stim, matplotlib and pylatexenc,
-which is everything you need including the plots. Two optional extras:
+A plain `pip install -e .` pulls quimb, qiskit, stim, matplotlib, pylatexenc — the
+full CPU toolkit including plots. Optional extras: `.[fast]` (kahypar/optuna for
+better quimb paths), `.[pauliprop]` (juliacall for the PauliPropagation.jl wrapper).
+GPU needs `cupy-cuda12x`; multi-worker BLAS pinning uses `threadpoolctl` (both
+optional). Developed on Python 3.12 with quimb 1.12, qiskit 2.4, stim 1.15.
 
-- `pip install -e ".[fast]"` adds kahypar and optuna for better quimb
-  contraction paths.
-- `pip install -e ".[pauliprop]"` adds juliacall for the PauliPropagation.jl
-  wrapper (see below).
+## What every file is
 
-It was developed against a Python 3.12 environment with quimb 1.12, qiskit 2.4
-and stim 1.15.
+**`proxysim/` — the package**
 
-## Running the examples
+| file | role |
+|---|---|
+| `__init__.py` | public API surface; re-exports the whole toolkit |
+| `simulate.py` | **the dispatcher** — `simulate()`, `make_backend`, `auto_simulator`, `noisy_survival`, `noisy_tvd_vs_support` |
+| `circuit.py` | backend-agnostic `Circuit`/`Gate` IR; builders (`lnn_brickwork`, `brickwork_magic`, `clifford_entropy_circuit`, `bench_brickwork`); `mirror()`/`inverse()`; `even_pairs`/`odd_pairs`; `GATE_SETS` |
+| `metrics.py` | distribution metrics (`total_variation_distance`, `classical_fidelity`, `shannon_entropy`, `tvd_to_ideal_support`) and result I/O (`save_results`/`load_results`, npz) |
+| `noise.py` | `NoiseModel` (one toggle, 4 Pauli channels: 2q/1q depolarizing, idle dephasing, readout); `to_stim_noisy` (native stim noise) and `sample_trajectory`/`apply_readout` (trajectories) |
+| `parallel.py` | single-node parallelism: `pmap`, `parallel_trajectories`, `sample_parallel`, with per-worker BLAS/thread pinning |
+| `runner.py` | `run_all()` — compares the exact output distribution across all backends (`ComparisonReport`) |
+| `benchmarking.py` | synthetic cycle benchmarking (`cycle_benchmark` via stim), `readout_fidelity`, the `qcap_bound`, `randomly_compile` |
+| `pauliprop.py` | `JuliaPauliPropagator` — wrapper around the real PauliPropagation.jl via juliacall; **expectation values only** |
+| `pauliprop_validator.py` | `PauliPropagator` — Julia-free reference for the same algorithm (uses `stim.PauliString` as a Pauli-algebra engine); **expectation values only** |
+| `viz.py` | matplotlib drawings: qiskit circuit, quimb tensor network, distribution bars, Pauli-prop coefficient panel |
 
-```bash
-python examples/visualize.py         # circuit + TN + distribution + Pauli-prop panel
-python examples/run_5q_lnn.py        # the preliminary 5-qubit MPS run
-python examples/run_compare.py       # the three backends agreeing exactly
-python examples/run_depth_sweep.py   # how depth drives entanglement and cost
-python examples/run_scaling.py       # cost vs qubit count; stim sampling to 1000 qubits
-python examples/run_pauliprop.py     # Pauli-propagation expectation values
-python examples/run_magic_coeffs.py  # magic vs the Pauli-coefficient distribution
-python examples/run_noise_compare.py # noise: fidelity and time across simulators
-```
+**`proxysim/backends/`**
 
-Text results land in `results/` and the figures shown here are in `docs/`.
+| file | role |
+|---|---|
+| `base.py` | `Backend` ABC + `SimResult`; the exact-distribution / optional-sampling split |
+| `statevector.py` | qiskit `Statevector` backend — `exact_distribution`, `amplitude`, `prob0` |
+| `tensornetwork.py` | quimb `CircuitMPS` (swap+split) — `exact_distribution`, `amplitude`/`prob0` (O(n·D²), no dense vector), `max_bond_of`, GPU via `gpu=True` |
+| `stabilizer.py` | stim backend (Clifford only) — exact tableau readout + native CHP sampler |
+| `gpu.py` | `GPUTensorNetworkBackend` (real: quimb + cupy), `GPUStatevectorBackend` (stub: cuStateVec / qulacs-gpu) |
 
-## Using it as a library
+**`examples/`** — each is a thin experiment script (circuits + metrics come from the package); each saves a figure and, where relevant, an `.npz` of its results
 
-```python
-from proxysim import Circuit, lnn_brickwork, run_all
+| file | what it does |
+|---|---|
+| `_bootstrap.py` | puts the repo root on `sys.path`; defines `RESULTS_DIR` |
+| `run_5q_lnn.py` | the preliminary 5-qubit MPS run |
+| `run_compare.py` | the three backends agreeing on the exact distribution |
+| `run_depth_sweep.py` | how depth drives entanglement / entropy / cost |
+| `run_scaling.py` | cost vs qubit count; stim sampling to 1000 qubits |
+| `visualize.py` | the 4-panel figure (circuit + TN + distribution + Pauli-prop) |
+| `run_pauliprop.py` | Pauli-propagation expectation values (wrapper vs validator) |
+| `run_magic_coeffs.py` | magic vs the Pauli-coefficient distribution |
+| `run_noise_compare.py` | noise: fidelity and time across simulators (GHZ) |
+| `run_bounding.py` | n=4 cycle-benchmark bound vs measured TVD (random + structured) |
+| `run_bounding_clifford.py` | 20-qubit Clifford mirror circuits: bound vs error |
+| `run_bound_vs_entropy.py` | bound looseness vs output Shannon entropy (fixed depth) |
+| `run_bound_vs_cycles.py` | bound vs TVD vs number of cycles at fixed entropy |
+| `run_parallel_hpc.py` | sample single-node parallel run (trajectories fanned across cores) |
 
-c = lnn_brickwork(n=5, n_cycles=4, twoq="cz", mode="clifford")   # or mode="haar"
-report = run_all(c)              # exact distributions + agreement check
-print(report.to_text())
-report = run_all(c, shots=8192)  # also draw a finite, hardware-style sample
+**root**: `pyproject.toml`, `requirements.txt`, `LICENSE`, `.gitignore`; `docs/`
+(committed figures for this README), `results/` (generated outputs, gitignored).
 
-# or build any circuit directly from the IR
-c = Circuit(3)
-c.h(0).cx(0, 1).cz(1, 2)
-```
+## Running on an HPC node (parallel)
 
-## The circuits
+The workhorse is `proxysim.parallel.pmap` — a parallel `map` over independent items
+(noise trajectories, circuit instances, parameter points). The one detail that
+matters: each worker pins its BLAS/OpenMP threads (default 1) so `n_workers`
+processes don't each spawn a full thread pool and thrash the cores.
 
-`lnn_brickwork` builds the linear-nearest-neighbour brickwork from Merkel et al.,
-Fig. 3: an initial Hadamard layer, then alternating even and odd two-qubit
-layers with single-qubit layers in between.
-
-```
-[initial Hadamard layer]
-repeat n_cycles times:
-    even pairs :  (0,1) (2,3) ...        # CZ or CX
-    single-qubit layer
-    odd pairs  :  (1,2) (3,4) ...
-    single-qubit layer
-```
-
-Setting `n_cycles = n-1` fully entangles the chain. In `mode="clifford"` the
-single-qubit gates are random Cliffords, so all three backends apply. In
-`mode="haar"` they are `Z(φ₁)·√X·Z(φ₂)·√X·Z(φ₃)` with random angles, which is
-non-Clifford, so stim steps aside and you are left with statevector and MPS.
-
-`brickwork_magic(n, n_cycles, n_t)` is the same idea but with `n_t` injected π/4
-"magic" gates, used in the Pauli-propagation study below.
-
-## Pauli propagation
-
-This is a different question from the rest of the package. Instead of asking for
-a whole distribution, you push a single observable `O` backward through the
-circuit in the Heisenberg picture and read off `⟨ψ|O|ψ⟩`. It stays cheap as long
-as the propagated observable stays sparse, which it does under truncation and
-especially under noise, and it is what process-fidelity and direct-fidelity
-estimates are actually built from. (It is also reference [6] of the Merkel paper,
-Angrisani et al.)
-
-There are two implementations, and they check each other:
-
-- `proxysim/pauliprop.py` is a thin wrapper around the real
-  [PauliPropagation.jl](https://github.com/MSRudolph/PauliPropagation.jl) (Rudolph
-  et al.). It boots Julia through juliacall, translates a proxysim circuit into
-  `PauliRotation` and `CliffordGate` objects, and calls the package's `propagate`
-  and `overlapwithzero`.
-- `proxysim/pauliprop_validator.py` is a pure-Python implementation of the same
-  algorithm that needs no Julia. It borrows `stim.PauliString` purely as a Pauli
-  algebra engine (multiply with signs, check commutation, conjugate by a
-  Clifford); it does not use stim's stabilizer simulator and is not connected to
-  the Julia package. It exists so you can validate the wrapper, or run without
-  Julia at all.
-
-Both agree with qiskit statevector expectation values to about 1e-16, and with
-each other. To use the wrapper:
-
-```bash
-pip install -e ".[pauliprop]"
-python -c "from proxysim.pauliprop import ensure_installed; ensure_installed()"  # once
-python examples/run_pauliprop.py
-```
+- statevector / tensor-network **trajectories** are CPU-bound and embarrassingly
+  parallel → `n_workers = cores`, `threads_per_worker = 1`.
+- one big contraction that already uses threaded BLAS → few workers, many threads.
+- GPU tensor networks are single-device → one worker with `gpu=True`, not many
+  CPU processes.
 
 ```python
-from proxysim import lnn_brickwork, JuliaPauliPropagator, PauliPropagator
-
-c = lnn_brickwork(6, 3, "cz", "haar")
-JuliaPauliPropagator().expectation(c, "Z_____")          # via PauliPropagation.jl
-PauliPropagator(max_weight=3).expectation(c, "Z_____")   # Julia-free, truncated
+simulate(circ, "tensornetwork", "survival", noise=noise, n_traj=4000,
+         parallel=True, n_workers=None)          # None -> os.cpu_count()
 ```
 
-`max_weight` and `min_abs_coeff` are the truncation knobs, the same names
-PauliPropagation.jl uses. Loosen them and the estimate converges to the exact
-value; under depolarizing noise a small `max_weight` is already nearly lossless
-because the high-weight Paulis have decayed.
+`examples/run_parallel_hpc.py` is a sample run (same seeds serial vs parallel, so
+the answers must match — that is the correctness check — while the wall-clock shows
+the speedup). Process workers pickle the worker by reference, so the package must be
+importable in the child (`pip install -e .`). On Linux the default `fork` start
+method inherits everything cleanly; validate the multi-worker path on the target
+node.
 
-### Magic and the coefficient spread
+## GPU (tensor networks)
 
-`run_magic_coeffs.py` propagates an observable through a brickwork with a growing
-number of magic gates and looks at the coefficients of the resulting Pauli
-strings. With no magic the observable stays a single Pauli. Each magic gate that
-anticommutes with a term splits it in two (scaled by 1/√2), so the number of
-Pauli strings climbs toward the full 4ⁿ space and the coefficients spread out
-toward many small values. That spread is precisely what truncation exploits.
+The tensor-network backend runs its contractions on the GPU by moving the MPS
+tensors to cupy — the same code path, a different array backend:
 
-![magic vs coefficient distribution](docs/magic_coeffs.png)
+```python
+simulate(circ, "tensornetwork", "distribution", gpu=True)     # needs cupy + CUDA
+# or:  from proxysim import TensorNetworkBackend; TensorNetworkBackend(gpu=True, max_bond=16)
+```
 
-## Noise
+Unlike statevector, tensor-network memory scales with the bond dimension, not `2^N`,
+so GPU-TN is the path to genuinely larger systems when entanglement is bounded. A
+dense GPU statevector (`GPUStatevectorBackend`) is a documented stub — it would buy
+speed via cuStateVec/qulacs-gpu but not change the `2^N` wall.
 
-`proxysim/noise.py` provides a `NoiseModel` with a single on/off toggle and four
-channels: two-qubit depolarizing after each entangling gate, one-qubit
-depolarizing after each single-qubit gate, dephasing on qubits that idle during a
-layer, and readout bit-flips. It can be applied two ways: inserted as native stim
-noise (exact and scalable, Clifford only), or sampled as Monte-Carlo trajectories
-for the statevector and MPS backends.
+## The science, briefly
 
-`run_noise_compare.py` runs a noisy circuit through all three and compares the
-fidelity of each noisy distribution to the ideal one, along with the time each
-takes. The three agree, which validates them against each other, and stim is
-about four orders of magnitude cheaper.
+**Exact by default.** These circuits are noiseless and unitary, so the output is
+deterministic. `run_all` computes the exact distribution once per backend; the three
+methods agree to ~1e-14. Shots are optional and only matter with noise.
 
-![noise: fidelity and time](docs/noise_compare.png)
+**Pauli propagation** ([run_pauliprop.py](examples/run_pauliprop.py),
+[run_magic_coeffs.py](examples/run_magic_coeffs.py)) evolves an *observable* backward
+(Heisenberg picture) and returns `⟨ψ|O|ψ⟩`. Note it is an **expectation-value tool,
+not a distribution tool**: a bitstring distribution `P(x)` is the Walsh–Hadamard
+transform of all `2^n` diagonal-Pauli expectations, so you cannot read TVD off a few
+`⟨Z_i⟩` (those give only the marginals). It is really the non-Clifford
+generalization of stim's Pauli-frame tracking — a Clifford gate maps one Pauli to
+one Pauli (so stim tracks a single Pauli, exactly and in poly time), whereas a
+T/rotation splits it into a *sum* of Paulis (which Pauli propagation tracks, growing
+~`2^t`, controlled by truncation). Accordingly `simulate()` sends `expectation` to
+Pauli propagation and everything distributional (`distribution`/`survival`) to the
+sampling backends.
 
-One honest caveat, visible in the code and the plot: a fidelity computed from the
-Z-basis distribution cannot see pure dephasing, because Z errors leave the
-diagonal of the density matrix untouched. That is physics, not a bug. Capturing
-dephasing would need a state fidelity from a density-matrix simulation, which is
-the natural next step.
+**Noise + bounding.** `NoiseModel` adds Pauli-stochastic channels; cycle
+benchmarking measures each entangling cycle's infidelity `e_F`, and the QCAP bound
+`1 - F_RO·∏(1-e_F)^n` upper-bounds the circuit error (the AKN diamond-norm chain,
+valid because the noise is Pauli). The bound is tight for low-entropy (mirror /
+Loschmidt-echo) outputs and loosens as the output entropy grows.
 
-## What the runs show
+![bounding vs entropy](docs/bound_vs_entropy.png)
 
-- `run_compare` — the MPS, statevector and stabilizer results are identical to
-  ~1e-14. A Clifford proxy gives a uniform distribution over a stabilizer coset;
-  a Haar target is non-uniform and stim skips it.
-- `run_depth_sweep` — the MPS bond dimension and output entropy grow with depth
-  and then saturate; for a Clifford brickwork the support is exactly 2^entropy.
-- `run_scaling` — the full distribution is 2ⁿ for every method, so they all top
-  out around 20 to 24 qubits. The genuinely scalable Clifford operation is
-  sampling, where stim handles a thousand qubits in well under a second.
+## Convention
 
-## Still to do
-
-- A density-matrix backend so noise fidelity can include dephasing.
-- GPU backends: cuStateVec via qiskit-aer-gpu or qulacs-gpu, and cuTensorNet
-  through quimb's `contract_backend="cupy"` (there are stubs in
-  `proxysim/backends/gpu.py`).
-- Parallelism that actually pays off, meaning noise trajectories and many
-  randomizations rather than shots of a single noiseless circuit (scaffold in
-  `proxysim/parallel.py`).
-- Larger runs across nodes with MPI.
-
-## A note on conventions
-
-Bitstrings are written with qubit 0 on the left throughout. The qiskit and stim
-backends use little-endian internally and are converted for you, so you never
-have to think about it at the API level.
+Bitstrings are written with qubit 0 on the left throughout; the qiskit and stim
+backends convert their native little-endian for you.

@@ -39,6 +39,16 @@ class StatevectorBackend(Backend):
             getattr(qc, _METHOD.get(g.name, g.name))(*g.params, *g.qubits)
         return qc
 
+    def amplitude(self, circuit, bitstring: str = None) -> complex:
+        """<x|psi> for a computational-basis string x (default |0...0>)."""
+        x = bitstring if bitstring is not None else "0" * circuit.n_qubits
+        idx = sum(int(b) << j for j, b in enumerate(x))     # q0 = LSB (qiskit)
+        return complex(Statevector(self._build(circuit)).data[idx])
+
+    def prob0(self, circuit) -> float:
+        """|<0...0|psi>|^2 -- survival probability of a mirror circuit."""
+        return abs(self.amplitude(circuit)) ** 2
+
     def exact_distribution(self, circuit, cutoff: float = 1e-12) -> Dict[str, float]:
         if circuit.n_qubits > self.max_exact_qubits:
             raise ValueError(f"statevector: n={circuit.n_qubits} exceeds 2^N readout limit")
