@@ -1,53 +1,62 @@
-"""proxysim -- a tiny general-purpose multi-backend quantum-circuit simulator.
+"""proxysim -- a multi-backend quantum-circuit simulator + benchmarking toolkit.
 
-Run the same backend-agnostic :class:`~proxysim.circuit.Circuit` on:
-  * a tensor-network simulator (quimb, native ``Circuit.sample`` contraction),
-  * an exact statevector simulator (qiskit), and
-  * a stabilizer simulator (stim, Clifford circuits only),
-each reporting the wall-clock time taken and the output bitstring distribution.
+Run the same backend-agnostic :class:`~proxysim.circuit.Circuit` on a
+tensor-network (quimb MPS, optional GPU), exact statevector (qiskit), or stabilizer
+(stim) backend, plus Pauli-propagation expectation values -- and bound circuit
+error from cycle benchmarking. Everything is reachable from one dispatcher,
+:func:`proxysim.simulate.simulate`.
 
 Motivated by Merkel et al., "When Clifford benchmarks are sufficient"
 (arXiv:2503.05943): Clifford "proxy" circuits are efficiently simulable
-(stabilizer), while their non-Clifford targets need TN/statevector methods.
+(stabilizer), while their non-Clifford targets need TN / statevector methods.
 """
 
-from .circuit import Circuit, Gate, lnn_brickwork, brickwork_magic
+# circuits
+from .circuit import (Circuit, Gate, lnn_brickwork, brickwork_magic,
+                      clifford_entropy_circuit, bench_brickwork, even_pairs,
+                      odd_pairs, GATE_SETS)
+# unified entry point
+from .simulate import simulate, make_backend, auto_simulator, noisy_survival
+# distribution comparison + metrics + I/O
 from .runner import run_all, ComparisonReport
-from .parallel import sample_parallel
+from . import metrics
+from .metrics import (total_variation_distance, classical_fidelity,
+                      hellinger_fidelity, shannon_entropy, tvd_to_ideal_support,
+                      save_results, load_results)
+# parallelism
+from .parallel import pmap, parallel_trajectories, sample_parallel
+# noise + benchmarking
 from . import noise
 from .noise import NoiseModel
+from . import benchmarking
+from .benchmarking import cycle_benchmark, qcap_bound, readout_fidelity
+# Pauli propagation
 from .pauliprop import JuliaPauliPropagator
 from .pauliprop_validator import PauliPropagator, expectation as pp_expectation
-from .backends import (
-    TensorNetworkBackend,
-    StatevectorBackend,
-    StabilizerBackend,
-    GPUStatevectorBackend,
-    GPUTensorNetworkBackend,
-    SimResult,
-    total_variation_distance,
-)
+# backends
+from .backends import (TensorNetworkBackend, StatevectorBackend, StabilizerBackend,
+                       GPUStatevectorBackend, GPUTensorNetworkBackend, SimResult)
 
 __all__ = [
-    "Circuit",
-    "Gate",
-    "lnn_brickwork",
-    "brickwork_magic",
-    "run_all",
-    "ComparisonReport",
-    "sample_parallel",
-    "noise",
-    "NoiseModel",
-    "JuliaPauliPropagator",
-    "PauliPropagator",
-    "pp_expectation",
-    "TensorNetworkBackend",
-    "StatevectorBackend",
-    "StabilizerBackend",
-    "GPUStatevectorBackend",
-    "GPUTensorNetworkBackend",
-    "SimResult",
-    "total_variation_distance",
+    # circuits
+    "Circuit", "Gate", "lnn_brickwork", "brickwork_magic", "clifford_entropy_circuit",
+    "bench_brickwork", "even_pairs", "odd_pairs", "GATE_SETS",
+    # dispatcher
+    "simulate", "make_backend", "auto_simulator", "noisy_survival",
+    # comparison / metrics / io
+    "run_all", "ComparisonReport", "metrics", "total_variation_distance",
+    "classical_fidelity", "hellinger_fidelity", "shannon_entropy",
+    "tvd_to_ideal_support", "save_results", "load_results",
+    # parallel
+    "pmap", "parallel_trajectories", "sample_parallel",
+    # noise / benchmarking
+    "noise", "NoiseModel", "benchmarking", "cycle_benchmark", "qcap_bound",
+    "readout_fidelity",
+    # pauli propagation
+    "JuliaPauliPropagator", "PauliPropagator", "pp_expectation",
+    # backends
+    "TensorNetworkBackend", "StatevectorBackend", "StabilizerBackend",
+    "GPUStatevectorBackend", "GPUTensorNetworkBackend", "SimResult",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

@@ -139,8 +139,5 @@ def apply_readout(bitstring: str, noise: NoiseModel, rng) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-def classical_fidelity(p: Dict[str, float], q: Dict[str, float]) -> float:
-    """Hellinger / classical fidelity  ( sum_x sqrt(p(x) q(x)) )^2  in [0, 1]."""
-    keys = set(p) | set(q)
-    return sum(math.sqrt(p.get(k, 0.0) * q.get(k, 0.0)) for k in keys) ** 2
+# classical_fidelity now lives in proxysim.metrics; re-exported here for back-compat.
+from .metrics import classical_fidelity  # noqa: E402,F401
