@@ -1,12 +1,13 @@
-"""GPU backends -- APPROACH STUBS (not yet implemented).
+"""GPU backends.
 
-These are intentionally empty scaffolds capturing *how* to add GPU-accelerated
-statevector and tensor-network simulation. They raise NotImplementedError so the
-intent is explicit; fill in ``run`` when a CUDA toolchain is available.
+GPUTensorNetworkBackend is REAL: it is the quimb MPS backend with the array
+backend set to cupy, so every contraction runs on the GPU. It just needs a CUDA
+GPU + ``cupy`` (``pip install cupy-cuda12x``); with no GPU it reports
+``available == False`` and you fall back to the CPU TensorNetworkBackend.
 
-Hardware/toolkit: NVIDIA GPU + CUDA 12.x.  NVIDIA's cuQuantum SDK provides
-``cuStateVec`` (statevector) and ``cuTensorNet`` (tensor-network contraction);
-both are reachable from Python via cupy and the simulators below.
+GPUStatevectorBackend is still a STUB -- a dense GPU statevector is a bigger lift
+(qiskit-aer-gpu / qulacs-gpu / cuStateVec) and, unlike the TN case, does not change
+the 2^N memory wall, only the speed. The approach is documented below.
 """
 
 from __future__ import annotations
@@ -14,72 +15,40 @@ from __future__ import annotations
 from typing import Optional
 
 from .base import Backend, SimResult
+from .tensornetwork import TensorNetworkBackend, gpu_available
+
+
+class GPUTensorNetworkBackend(TensorNetworkBackend):
+    """quimb MPS contractions on the GPU (cupy). Same API as the CPU backend."""
+
+    name = "gpu-tensornetwork(quimb+cupy)"
+    available = gpu_available()
+
+    def __init__(self, max_bond: Optional[int] = None, cutoff: float = 1e-12,
+                 dtype: str = "complex64"):
+        # complex64 is usually the sweet spot on GPU (2x throughput, plenty for shots)
+        super().__init__(max_bond=max_bond, cutoff=cutoff, dtype=dtype, gpu=True)
 
 
 class GPUStatevectorBackend(Backend):
-    """GPU statevector via cuStateVec.  STUB.
+    """GPU statevector via cuStateVec -- STUB.
 
-    Approach
-    --------
-    Option A -- qiskit-aer GPU:
-        from qiskit_aer import AerSimulator
-        sim = AerSimulator(method="statevector", device="GPU")  # uses cuStateVec Probably can use this directly
-        # transpile the IR-built QuantumCircuit, add measure_all(), run(shots),
-        # then .get_counts(); reverse keys to canonical q0-leftmost.
-        # install: pip install qiskit-aer-gpu  (CUDA 12.x wheels)
-
-    Option B -- qulacs GPU:
-        from qulacs import QuantumStateGpu, QuantumCircuit as QC
-        state = QuantumStateGpu(n); ...; state.sampling(shots)
+    Approach (fill in run()):
+      * qiskit-aer GPU:
+            from qiskit_aer import AerSimulator
+            sim = AerSimulator(method="statevector", device="GPU")   # cuStateVec
+        # transpile the IR circuit, measure_all(), run(shots), reverse the keys.
+        # install: pip install qiskit-aer-gpu   (CUDA 12.x wheels)
+      * qulacs GPU:  from qulacs import QuantumStateGpu; state.sampling(shots)
         # install: pip install qulacs-gpu
-
-    Option C -- cuQuantum cuStateVec directly (cupy arrays) for full control.
-
-    Memory wall is unchanged: a dense GPU statevector is still 2^N amplitudes,
-    so GPU buys speed (and a bit more headroom) but not exponential scaling.
+    The 2^N memory wall is unchanged -- GPU buys speed, not scaling.
     """
 
     name = "gpu-statevector(cuStateVec)"
-    available = False  # flip to True once a GPU build is wired up
+    available = False
 
-    def run(self, circuit, shots: int, seed: Optional[int] = None) -> SimResult:
+    def exact_distribution(self, circuit, cutoff: float = 1e-12):
         raise NotImplementedError(
-            "GPU statevector backend is a stub. See the docstring for the "
-            "qiskit-aer-gpu / qulacs-gpu / cuStateVec approach, then implement run()."
-        )
-
-
-class GPUTensorNetworkBackend(Backend):
-    """GPU tensor-network via cuTensorNet (quimb + cupy).  STUB.
-
-    Approach
-    --------
-    quimb already supports non-numpy array backends through autoray, so the
-    *same* ``Circuit.sample`` path can contract on the GPU:
-
-        from proxysim.backends import TensorNetworkBackend
-        tn = TensorNetworkBackend(contract_backend="cupy", dtype="complex64")
-        # quimb dispatches the contractions to cupy (GPU). For best paths use
-        # cotengra; cuTensorNet can execute the contraction tree on-device.
-
-    So in practice GPU-TN is mostly a configuration of the existing CPU backend
-    (``contract_backend='cupy'``) plus a cotengra/cuTensorNet path optimiser --
-    this class exists to make that an explicit, named backend and to host any
-    GPU-specific batching of the marginal chain.
-
-    install: pip install cupy-cuda12x cotengra  (+ optional cuquantum-python)
-
-    Unlike statevector, TN contraction memory scales with the contraction
-    *width* (max bond dimension), not 2^N, so GPU-TN is the path to genuinely
-    larger systems when entanglement is bounded.
-    """
-
-    name = "gpu-tensornetwork(cuTensorNet)"
-    available = False  # flip to True once cupy/cuTensorNet is wired up
-
-    def run(self, circuit, shots: int, seed: Optional[int] = None) -> SimResult:
-        raise NotImplementedError(
-            "GPU tensor-network backend is a stub. The near-term route is "
-            "TensorNetworkBackend(contract_backend='cupy'); implement run() here "
-            "to add cuTensorNet path execution and marginal batching."
+            "GPU statevector is a stub -- see the docstring for the qiskit-aer-gpu / "
+            "qulacs-gpu route, then implement exact_distribution()."
         )

@@ -67,6 +67,21 @@ class StabilizerBackend(Backend):
             self._emit(c.append, g)
         return c
 
+    def amplitude(self, circuit, bitstring=None) -> complex:
+        """<x|psi> for a computational-basis string x (default |0...0>)."""
+        import numpy as np
+
+        x = bitstring if bitstring is not None else "0" * circuit.n_qubits
+        sim = stim.TableauSimulator()
+        sim.do_circuit(self._unitary_circuit(circuit))
+        sv = np.asarray(sim.state_vector())          # little-endian: qubit j = bit j
+        idx = sum(int(b) << j for j, b in enumerate(x))
+        return complex(sv[idx])
+
+    def prob0(self, circuit) -> float:
+        """|<0...0|psi>|^2 -- survival probability of a mirror circuit."""
+        return abs(self.amplitude(circuit)) ** 2
+
     def exact_distribution(self, circuit, cutoff: float = 1e-12) -> Dict[str, float]:
         if not self.supports(circuit):
             raise RuntimeError("stim backend only supports fully-Clifford circuits")
