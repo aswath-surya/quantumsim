@@ -106,10 +106,22 @@ def cycle_benchmark(pairs, n: int, depths, noise, mode: str = "random",
     """Estimate the process infidelity e_F of the dressed cycle whose entangling
     layer is ``pairs`` (a list of qubit pairs), under ``noise``.
 
-    Protocol per sequence length m: pick a random Pauli, prepare its +1 eigenstate,
-    apply m noisy rounds (single-qubit twirl layer + the entangling layer), then
-    measure the Pauli it ideally maps to. Average the survival over ``n_decays``
-    random Paulis, then fit  survival(m) = A * f^m  and report e_F = 1 - f.
+    Protocol per sequence length m: for each of ``n_decays`` random Paulis, prepare
+    its +1 eigenstate, apply m noisy rounds (single-qubit twirl layer + the
+    entangling layer), and measure the Pauli it ideally maps to. Averaging the
+    signed survival over the sampled Paulis is a Monte-Carlo estimate of the
+    twirled-cycle survival -- the full Pauli group has d^2 = 4^n elements, far too
+    many to enumerate -- which is fit to  survival(m) = A * f^m.
+
+    The fitted ``f`` is the process *polarization*, not the infidelity. The process
+    fidelity is the average Pauli fidelity F_e = (1/d^2) sum_P f_P, so with d = 2^n
+    (Hashim et al. 2408.12064, Table II):
+
+        e_F = (d^2 - 1)/d^2 * (1 - f),   r = d/(d+1) * e_F,   F_avg = 1 - r.
+
+    SPAM robustness: state-prep and readout errors scale the amplitude A but not the
+    decay rate f, so e_F is SPAM-independent (readout enters the bound separately,
+    via ``readout_fidelity``).
     """
     rng = random.Random(seed)
     oneq_set = _ONEQ_RANDOM if mode == "random" else _ONEQ_STRUCTURED
@@ -143,8 +155,14 @@ def cycle_benchmark(pairs, n: int, depths, noise, mode: str = "random",
         decay.append(float(np.mean(vals)))
 
     f, f_std = _fit_decay(np.array(depths, float), np.array(decay))
+    factor = 1.0 - 4.0 ** (-n)                 # (d^2 - 1)/d^2 with d = 2^n
+    e_F = factor * (1.0 - f)
+    e_F_std = factor * f_std
+    d = 2.0 ** n
+    r = d / (d + 1.0) * e_F                     # average gate infidelity (Table II)
     return {"depths": list(depths), "decay": decay, "f": f,
-            "e_F": 1 - f, "e_F_std": f_std}
+            "e_F": e_F, "e_F_std": e_F_std, "F_e": 1.0 - e_F,
+            "r": r, "F_avg": 1.0 - r}
 
 
 def _fit_decay(m, y):
@@ -230,14 +248,17 @@ def randomly_compile(circuit, n_compilations: int, seed: int = 0):
 
     A twirl inserts random Paulis around each entangling layer and corrects them
     on the neighbouring single-qubit layers, leaving the ideal action unchanged
-    while tailoring the physical error toward Pauli-stochastic. With a
-    Pauli-stochastic noise model the output distribution is already twirl-averaged,
-    so this mainly documents the step; it returns copies with random single-qubit
-    Pauli prefactors for realism.
+    while tailoring the physical error toward Pauli-stochastic. Our NoiseModel is
+    ALREADY Pauli-stochastic (depolarizing + dephasing + bit-flip readout), so the
+    output is already twirl-averaged and a real twirl would be a no-op on the
+    statistics. This function therefore returns verbatim copies -- it documents
+    where RC sits in the workflow but does not synthesize the twirl. (A functional
+    twirl only earns its keep once coherent errors are added to the noise model.)
+    The twirling CB actually relies on -- random single-qubit layers around each
+    cycle -- IS implemented, inside ``cycle_benchmark``.
     """
     from .circuit import Circuit
 
-    rng = random.Random(seed)
     out = []
     for _ in range(n_compilations):
         nc = Circuit(circuit.n_qubits, name=circuit.name + "_rc")

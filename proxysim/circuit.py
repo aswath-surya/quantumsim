@@ -26,6 +26,9 @@ _CLIFFORD_1Q = {"i", "x", "y", "z", "h", "s", "sdg", "sx", "sxdg"}
 _CLIFFORD_2Q = {"cx", "cnot", "cz", "cy", "swap"}
 # Parametrised rotations: Clifford only when the angle is a multiple of pi/2.
 _PARAM_1Q = {"rx", "ry", "rz", "p"}
+# Parametrised two-qubit controlled-phase: Clifford only at multiples of pi
+# (cp(pi) = CZ; cp(pi/2) = controlled-S is NOT Clifford).
+_PARAM_2Q = {"cp", "cu1"}
 # Explicitly non-Clifford fixed gates.
 _NON_CLIFFORD = {"t", "tdg"}
 
@@ -34,6 +37,11 @@ _HALF_PI = math.pi / 2.0
 
 def _is_multiple_of_half_pi(theta: float, tol: float = 1e-9) -> bool:
     r = theta / _HALF_PI
+    return abs(r - round(r)) < tol
+
+
+def _is_multiple_of_pi(theta: float, tol: float = 1e-9) -> bool:
+    r = theta / math.pi
     return abs(r - round(r)) < tol
 
 
@@ -54,6 +62,8 @@ class Gate:
             return False
         if n in _PARAM_1Q:
             return all(_is_multiple_of_half_pi(p) for p in self.params)
+        if n in _PARAM_2Q:
+            return all(_is_multiple_of_pi(p) for p in self.params)
         # Unknown gate: be conservative.
         return False
 
@@ -420,3 +430,50 @@ def bench_brickwork(n, n_cycles, cycles, oneq="clifford", twoq="cz", seed=0,
     if final_oneq:
         layer()
     return c
+
+
+# ---------------------------------------------------------------------------
+# OpenQASM 2.0 ingestion (via qiskit) -> proxysim IR
+# ---------------------------------------------------------------------------
+_QASM_GATE = {
+    "id": "i", "x": "x", "y": "y", "z": "z", "h": "h", "s": "s", "sdg": "sdg",
+    "sx": "sx", "sxdg": "sxdg", "t": "t", "tdg": "tdg",
+    "rx": "rx", "ry": "ry", "rz": "rz", "p": "rz",
+    "cx": "cx", "cnot": "cx", "cz": "cz", "cy": "cy", "swap": "swap",
+    "cp": "cp", "cu1": "cp",
+}
+
+
+def circuit_from_qasm(qasm: str):
+    """Parse an OpenQASM 2.0 string into a proxysim ``Circuit``.
+
+    Uses qiskit to parse, then maps each instruction onto the IR. Returns
+    ``(circuit, measured_qubits)`` where ``measured_qubits`` is the sorted list of
+    qubit indices that appear in a ``measure`` (so unmeasured ancillas can be
+    marginalised out afterwards). ``barrier``/``delay`` are dropped.
+    """
+    from qiskit import QuantumCircuit
+
+    try:
+        qc = QuantumCircuit.from_qasm_str(qasm)
+    except Exception:
+        import qiskit.qasm2
+        qc = qiskit.qasm2.loads(qasm)
+
+    circ = Circuit(qc.num_qubits, name="qasm")
+    measured = set()
+    for inst in qc.data:
+        op = getattr(inst, "operation", inst[0])
+        qubits = getattr(inst, "qubits", inst[1])
+        idx = [qc.find_bit(q).index for q in qubits]
+        name = op.name.lower()
+        if name == "measure":
+            measured.update(idx)
+            continue
+        if name in ("barrier", "delay", "reset"):
+            continue
+        if name not in _QASM_GATE:
+            raise ValueError(f"circuit_from_qasm: unsupported gate '{name}'")
+        params = tuple(float(p) for p in op.params) if op.params else ()
+        circ.add(_QASM_GATE[name], *idx, params=params)
+    return circ, sorted(measured)

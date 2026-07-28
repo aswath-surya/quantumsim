@@ -38,6 +38,7 @@ _NAME = {
     "t": "T", "tdg": "TDG",
     "cx": "CX", "cnot": "CX", "cz": "CZ", "cy": "CY", "swap": "SWAP",
     "rx": "RX", "ry": "RY", "rz": "RZ", "p": "PHASE",
+    "cp": "CU1", "cu1": "CU1",   # controlled-phase = controlled-U1
 }
 
 
