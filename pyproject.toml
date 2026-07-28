@@ -33,6 +33,9 @@ fast = ["kahypar", "optuna", "cotengra"]
 # After install, run once:
 #   python -c "from proxysim.pauliprop import ensure_installed; ensure_installed()"
 pauliprop = ["juliacall"]
+# Surface-code decoding for examples/run_qec_vs_random.py (LER via minimum-weight
+# perfect matching on stim's detector error model).
+qec = ["pymatching>=2.0"]
 # GPU acceleration (CUDA 12.x). Platform-specific; install manually as needed.
 # gpu = ["cupy-cuda12x", "qiskit-aer-gpu", "cuquantum-python"]
 dev = ["pytest"]

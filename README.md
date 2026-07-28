@@ -94,7 +94,37 @@ optional). Developed on Python 3.12 with quimb 1.12, qiskit 2.4, stim 1.15.
 | `run_bounding_clifford.py` | 20-qubit Clifford mirror circuits: bound vs error |
 | `run_bound_vs_entropy.py` | bound looseness vs output Shannon entropy (fixed depth) |
 | `run_bound_vs_cycles.py` | bound vs TVD vs number of cycles at fixed entropy |
+| `run_qpe_bounding.py` | real MQT QPE circuit (`qpe11.qasm`): CB bound vs full-distribution TVD, swept over noise strength |
+| `run_qft_bounding.py` | real MQT QFT circuit (`qft14.qasm`, non-Clifford): per-2q-gate dressed cycles, CB via Clifford proxy, summed-infidelity bound; shows the bound going vacuous when the ideal is a noise fixed point |
+| `run_qec_vs_random.py` | bound vs actual performance for two families as noise grows, all on one shared log axis: a random moderate-entropy circuit (bound vs output-distribution TVD) and a rotated surface code (AKN bound vs the actual full-record TVD vs the pymatching-decoded LER). The bound is *tight* on the full-record TVD in both cases; the surface code's orders-of-magnitude drop to the LER is entirely decoding, not bound looseness |
 | `run_parallel_hpc.py` | sample single-node parallel run (trajectories fanned across cores) |
+
+`qpe11.qasm` is the 12-qubit MQT-Bench QPE circuit loaded via
+`proxysim.circuit.circuit_from_qasm`. Its ideal output is a delta at the correct
+phase, so the full-distribution TVD collapses to `1 - P(peak)`; the bound is
+correspondingly tight (a delta ideal is maximally far from uniform). The ideal is
+read exactly off the MPS backend (bond 1 — a product state), but the noisy sweep
+runs on the statevector backend: at n=12 QPE's all-to-all inverse-QFT is SWAP-bound
+and MPS is ~25x slower, since MPS only pays off for local, bounded-entanglement
+circuits.
+
+`qft14.qasm` (MQT QFT-14) is **non-Clifford** -- its `cp(pi/2^k)` gates are
+controlled-phases that stim cannot simulate and that standard Clifford cycle
+benchmarking cannot be run on directly (a Pauli conjugated through `cp` is a sum of
+Paulis, not one Pauli). `run_qft_bounding.py` handles this with the **Clifford
+proxy** (Merkel et al. 2503.05943): each 2q gate is its own dressed cycle
+(single-qubit layer, which absorbs the Hadamards + Pauli twirl, plus the entangling
+gate plus idle dephasing), and CB benchmarks the *noise* that gate carries via a
+Clifford entangler (CZ = `cp(pi)`); under gate-independent Pauli noise the proxy
+`e_F` equals the real gate's. The example also illustrates the looseness extreme:
+`QFT|0...0> = |+>^n` is a product state whose uniform Z-basis readout is a
+**Pauli-noise fixed point**, so the actual Z-basis TVD is identically 0 while the
+bound climbs to 1 -- the opposite of QPE's tight delta-ideal bound. This is NOT "no
+noise": the plot also shows the state infidelity `1 - <psi|rho|psi>` rising to ~0.5,
+and an exact density-matrix simulation confirms the state goes nearly maximally mixed
+(fidelity ~0.26, purity ~0.08 at p1=2e-2, p2=5e-2) while the TVD stays 0 to machine
+precision. The readout basis is simply blind to the damage -- coherent (non-Pauli)
+noise would show up; Pauli noise on `|+>^n` cannot.
 
 **root**: `pyproject.toml`, `requirements.txt`, `LICENSE`, `.gitignore`; `docs/`
 (committed figures for this README), `results/` (generated outputs, gitignored).
