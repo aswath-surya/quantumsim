@@ -77,10 +77,10 @@ N = 2
 CYCLE_A = even_pairs(N)
 CYCLE_B = odd_pairs(N)
 
-DEPTHS = [1, 2, 4, 8, 16, 32, 64, 128]
+DEPTHS = [1, 2, 4, 8, 16, 32, 64]
 CB_DEPTHS = [1, 2, 4, 8, 16, 24]
 
-N_INSTANCES = 30
+N_INSTANCES = 60
 
 # These are Monte-Carlo noise trajectories, not measurement shots.
 TVD_TRAJECTORIES = 1000

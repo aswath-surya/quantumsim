@@ -21,3 +21,4 @@ results/*.png
 .DS_Store
 .vscode/
 .idea/
+.env

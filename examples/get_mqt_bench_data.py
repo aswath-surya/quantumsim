@@ -153,8 +153,9 @@ def _package_version(package_name: str) -> str:
 
 
 if __name__ == "__main__":
+    N=8
     export_benchmarks(
-        requested_qubits=20,
-        output_dir="mqtbench_20q",
+        requested_qubits=N,
+        output_dir="mqtbench_{}q".format(N),
         require_exact_size=True,
     )

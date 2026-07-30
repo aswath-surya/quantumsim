@@ -1,0 +1,15 @@
+benchmark,requested_qubits,actual_qubits,depth,gates,status,path,error
+ae,8,,,,generation_failed,,TypeError: only 0-dimensional arrays can be converted to Python scalars
+bv,8,8,6,25,saved,mqtbench_8q/bv_8q.qasm,
+dj,8,8,5,24,saved,mqtbench_8q/dj_8q.qasm,
+ghz,8,8,9,16,saved,mqtbench_8q/ghz_8q.qasm,
+graphstate,8,8,8,24,saved,mqtbench_8q/graphstate_8q.qasm,
+grover,8,8,10,24,saved,mqtbench_8q/grover_8q.qasm,
+qft,8,8,2,9,saved,mqtbench_8q/qft_8q.qasm,
+qftentangled,8,8,10,17,saved,mqtbench_8q/qftentangled_8q.qasm,
+qnn,8,8,14,63,saved,mqtbench_8q/qnn_8q.qasm,
+randomcircuit,8,8,17,54,saved,mqtbench_8q/randomcircuit_8q.qasm,
+vqe_real_amp,8,8,16,61,saved,mqtbench_8q/vqe_real_amp_8q.qasm,
+vqe_su2,8,8,20,93,saved,mqtbench_8q/vqe_su2_8q.qasm,
+vqe_two_local,8,8,34,124,saved,mqtbench_8q/vqe_two_local_8q.qasm,
+wstate,8,8,17,37,saved,mqtbench_8q/wstate_8q.qasm,
