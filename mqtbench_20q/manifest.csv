@@ -1,0 +1,15 @@
+benchmark,requested_qubits,actual_qubits,depth,gates,status,path,error
+ae,20,,,,generation_failed,,TypeError: only 0-dimensional arrays can be converted to Python scalars
+bv,20,20,12,67,saved,mqtbench_20q/bv_20q.qasm,
+dj,20,20,5,60,saved,mqtbench_20q/dj_20q.qasm,
+ghz,20,20,21,40,saved,mqtbench_20q/ghz_20q.qasm,
+graphstate,20,20,6,60,saved,mqtbench_20q/graphstate_20q.qasm,
+grover,20,20,570,608,saved,mqtbench_20q/grover_20q.qasm,
+qft,20,20,2,21,saved,mqtbench_20q/qft_20q.qasm,
+qftentangled,20,20,22,41,saved,mqtbench_20q/qftentangled_20q.qasm,
+qnn,20,20,26,159,saved,mqtbench_20q/qnn_20q.qasm,
+randomcircuit,20,20,41,328,saved,mqtbench_20q/randomcircuit_20q.qasm,
+vqe_real_amp,20,20,28,157,saved,mqtbench_20q/vqe_real_amp_20q.qasm,
+vqe_su2,20,20,32,237,saved,mqtbench_20q/vqe_su2_20q.qasm,
+vqe_two_local,20,20,82,670,saved,mqtbench_20q/vqe_two_local_20q.qasm,
+wstate,20,20,41,97,saved,mqtbench_20q/wstate_20q.qasm,

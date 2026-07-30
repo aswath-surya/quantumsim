@@ -1,0 +1,34 @@
+Global-depolarizing model diagnostic summary
+=============================================
+
+n_qubits: 4
+depths: [1, 2, 4, 8, 16, 32]
+instances per mode/depth: 50
+RC randomizations per circuit: 8
+trajectories per RC circuit: 50
+
+RANDOM
+------
+depth=   1: mean residual=0.0127515, median residual/actual=0.4683, mean alpha/QCAP=0.8988, coverage(QCAP/exact/R2)=1.000/0.520/0.800
+depth=   2: mean residual=0.012537, median residual/actual=0.3735, mean alpha/QCAP=0.8179, coverage(QCAP/exact/R2)=1.000/0.780/0.960
+depth=   4: mean residual=0.0190011, median residual/actual=0.2667, mean alpha/QCAP=1.1738, coverage(QCAP/exact/R2)=1.000/0.100/0.660
+depth=   8: mean residual=0.0182808, median residual/actual=0.1538, mean alpha/QCAP=1.1969, coverage(QCAP/exact/R2)=1.000/0.140/0.660
+depth=  16: mean residual=0.0204076, median residual/actual=0.0984, mean alpha/QCAP=1.3082, coverage(QCAP/exact/R2)=1.000/0.000/0.340
+depth=  32: mean residual=0.0176191, median residual/actual=0.0601, mean alpha/QCAP=1.2098, coverage(QCAP/exact/R2)=1.000/0.000/0.500
+
+STRUCTURED
+----------
+depth=   1: mean residual=0.0207777, median residual/actual=0.3289, mean alpha/QCAP=2.2266, coverage(QCAP/exact/R2)=0.680/0.460/0.500
+depth=   2: mean residual=0.0108508, median residual/actual=0.1924, mean alpha/QCAP=1.2270, coverage(QCAP/exact/R2)=1.000/0.900/0.900
+depth=   4: mean residual=0.0226354, median residual/actual=0.0000, mean alpha/QCAP=1.8049, coverage(QCAP/exact/R2)=0.740/0.340/0.420
+depth=   8: mean residual=0.018151, median residual/actual=0.0000, mean alpha/QCAP=1.8367, coverage(QCAP/exact/R2)=0.900/0.400/0.500
+depth=  16: mean residual=0.0192453, median residual/actual=0.0000, mean alpha/QCAP=1.4625, coverage(QCAP/exact/R2)=0.920/0.340/0.440
+depth=  32: mean residual=0.0086428, median residual/actual=0.0000, mean alpha/QCAP=1.2175, coverage(QCAP/exact/R2)=0.920/0.220/0.360
+
+Interpretation guide
+--------------------
+1. Small fit residuals for both ensembles support the claim that the measured output channel is approximately a global mixture with uniform noise, even when the circuit is structured.
+2. If structured residuals are large but the entropy prediction still covers the TVD, the apparent success is not explained by the global-depolarizing model and should be treated as empirical.
+3. If alpha_fit tracks QCAP error, CB/QCAP is estimating the same effective white-noise strength used by the entropy correction.
+4. If alpha_fit is systematically below QCAP, the baseline remains conservative and the entropy correction may still work as an upper prediction. If alpha_fit exceeds QCAP, violations are expected.
+5. Repeat with different noise mechanisms separately: stochastic Pauli only, coherent only, spectator/correlated, and drift. This identifies which channels preserve or destroy the white-noise fit.

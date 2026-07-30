@@ -16,10 +16,70 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Distribution metrics (inputs are {bitstring: probability} dicts)
 # ---------------------------------------------------------------------------
-def total_variation_distance(p: Dict[str, float], q: Dict[str, float]) -> float:
-    """TVD = 1/2 sum_x |p(x) - q(x)|.  0 = identical, 1 = disjoint support."""
-    keys = set(p) | set(q)
-    return 0.5 * sum(abs(p.get(k, 0.0) - q.get(k, 0.0)) for k in keys)
+import numpy as np
+
+import numpy as np
+
+
+def total_variation_distance(p, q):
+    """Compute TVD between probability distributions.
+
+    Supports:
+      - dict vs dict
+      - array vs array
+      - dict vs array
+      - array vs dict
+
+    Dictionary keys may be bitstrings such as "001" or integer indices.
+    """
+
+    if isinstance(p, dict) and isinstance(q, dict):
+        keys = set(p) | set(q)
+        return 0.5 * sum(
+            abs(float(p.get(k, 0.0)) - float(q.get(k, 0.0)))
+            for k in keys
+        )
+
+    if isinstance(p, dict):
+        q_array = np.asarray(q, dtype=float).reshape(-1)
+        p_array = _dict_to_dense(p, q_array.size)
+        return 0.5 * float(np.sum(np.abs(p_array - q_array)))
+
+    if isinstance(q, dict):
+        p_array = np.asarray(p, dtype=float).reshape(-1)
+        q_array = _dict_to_dense(q, p_array.size)
+        return 0.5 * float(np.sum(np.abs(p_array - q_array)))
+
+    p_array = np.asarray(p, dtype=float).reshape(-1)
+    q_array = np.asarray(q, dtype=float).reshape(-1)
+
+    if p_array.shape != q_array.shape:
+        raise ValueError(
+            f"Distribution shapes differ: "
+            f"{p_array.shape} vs {q_array.shape}"
+        )
+
+    return 0.5 * float(np.sum(np.abs(p_array - q_array)))
+
+
+def _dict_to_dense(distribution, size):
+    """Convert a dict distribution to a dense probability vector."""
+    dense = np.zeros(size, dtype=float)
+
+    for key, value in distribution.items():
+        if isinstance(key, str):
+            index = int(key.replace(" ", ""), 2)
+        else:
+            index = int(key)
+
+        if index < 0 or index >= size:
+            raise ValueError(
+                f"Outcome index {index} is outside distribution size {size}."
+            )
+
+        dense[index] += float(value)
+
+    return dense
 
 
 def classical_fidelity(p: Dict[str, float], q: Dict[str, float]) -> float:

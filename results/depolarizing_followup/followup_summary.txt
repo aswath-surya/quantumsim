@@ -1,0 +1,147 @@
+Follow-up alpha/entropy prediction analysis
+============================================
+
+RANDOM
+------
+Global calibration alpha_fit = intercept + slope*QCAP:
+  intercept = -0.0253817
+  slope     = 1.28215
+  R^2       = 0.979317
+  RMSE      = 0.0396315
+
+depth=1
+  QCAP              MAE=0.043435, bias=+0.043435, coverage=1.000
+  exact(QCAP)       MAE=0.004975, bias=+0.000470, coverage=0.520
+  R2(QCAP)          MAE=0.010726, bias=+0.009950, coverage=0.800
+  exact(alpha_fit)  MAE=0.003401, bias=-0.002804, coverage=0.140
+  R2(alpha_fit)     MAE=0.006342, bias=+0.005472, coverage=0.820
+  mean alpha/QCAP = 0.8988
+  mean fit residual = 0.012752
+  median unexplained fraction = 0.4683
+
+depth=2
+  QCAP              MAE=0.068833, bias=+0.068833, coverage=1.000
+  exact(QCAP)       MAE=0.007870, bias=+0.005603, coverage=0.780
+  R2(QCAP)          MAE=0.017692, bias=+0.017392, coverage=0.960
+  exact(alpha_fit)  MAE=0.002477, bias=-0.001648, coverage=0.320
+  R2(alpha_fit)     MAE=0.008111, bias=+0.007957, coverage=0.940
+  mean alpha/QCAP = 0.8179
+  mean fit residual = 0.012537
+  median unexplained fraction = 0.3735
+
+depth=4
+  QCAP              MAE=0.092344, bias=+0.092344, coverage=1.000
+  exact(QCAP)       MAE=0.012682, bias=-0.011448, coverage=0.100
+  R2(QCAP)          MAE=0.008916, bias=+0.004868, coverage=0.660
+  exact(alpha_fit)  MAE=0.004373, bias=-0.002238, coverage=0.380
+  R2(alpha_fit)     MAE=0.017091, bias=+0.016966, coverage=0.980
+  mean alpha/QCAP = 1.1738
+  mean fit residual = 0.019001
+  median unexplained fraction = 0.2667
+
+depth=8
+  QCAP              MAE=0.147590, bias=+0.147590, coverage=1.000
+  exact(QCAP)       MAE=0.021571, bias=-0.020249, coverage=0.140
+  R2(QCAP)          MAE=0.022743, bias=+0.009408, coverage=0.660
+  exact(alpha_fit)  MAE=0.004250, bias=-0.001547, coverage=0.360
+  R2(alpha_fit)     MAE=0.033569, bias=+0.033569, coverage=1.000
+  mean alpha/QCAP = 1.1969
+  mean fit residual = 0.018281
+  median unexplained fraction = 0.1538
+
+depth=16
+  QCAP              MAE=0.233934, bias=+0.233934, coverage=1.000
+  exact(QCAP)       MAE=0.049984, bias=-0.049984, coverage=0.000
+  R2(QCAP)          MAE=0.017468, bias=-0.003556, coverage=0.340
+  exact(alpha_fit)  MAE=0.004981, bias=-0.001782, coverage=0.320
+  R2(alpha_fit)     MAE=0.058918, bias=+0.058918, coverage=1.000
+  mean alpha/QCAP = 1.3082
+  mean fit residual = 0.020408
+  median unexplained fraction = 0.0984
+
+depth=32
+  QCAP              MAE=0.389468, bias=+0.389468, coverage=1.000
+  exact(QCAP)       MAE=0.049231, bias=-0.049231, coverage=0.000
+  R2(QCAP)          MAE=0.022957, bias=+0.010609, coverage=0.500
+  exact(alpha_fit)  MAE=0.003193, bias=+0.000159, coverage=0.520
+  R2(alpha_fit)     MAE=0.072708, bias=+0.072708, coverage=1.000
+  mean alpha/QCAP = 1.2098
+  mean fit residual = 0.017619
+  median unexplained fraction = 0.0601
+
+
+STRUCTURED
+----------
+Global calibration alpha_fit = intercept + slope*QCAP:
+  intercept = 0.0853018
+  slope     = 1.1656
+  R^2       = 0.528656
+  RMSE      = 0.228327
+
+depth=1
+  QCAP              MAE=0.029378, bias=+0.013399, coverage=0.680
+  exact(QCAP)       MAE=0.018883, bias=-0.008724, coverage=0.460
+  R2(QCAP)          MAE=0.018087, bias=-0.003056, coverage=0.500
+  exact(alpha_fit)  MAE=0.000000, bias=-0.000000, coverage=0.680
+  R2(alpha_fit)     MAE=0.006761, bias=+0.006761, coverage=0.960
+  mean alpha/QCAP = 2.2266
+  mean fit residual = 0.020778
+  median unexplained fraction = 0.3289
+
+depth=2
+  QCAP              MAE=0.056627, bias=+0.056627, coverage=1.000
+  exact(QCAP)       MAE=0.023560, bias=+0.020678, coverage=0.900
+  R2(QCAP)          MAE=0.028957, bias=+0.027448, coverage=0.900
+  exact(alpha_fit)  MAE=0.000000, bias=-0.000000, coverage=0.660
+  R2(alpha_fit)     MAE=0.004742, bias=+0.004742, coverage=0.940
+  mean alpha/QCAP = 1.2270
+  mean fit residual = 0.010851
+  median unexplained fraction = 0.1924
+
+depth=4
+  QCAP              MAE=0.059795, bias=+0.048996, coverage=0.740
+  exact(QCAP)       MAE=0.027676, bias=-0.017436, coverage=0.340
+  R2(QCAP)          MAE=0.022552, bias=-0.009082, coverage=0.420
+  exact(alpha_fit)  MAE=0.000000, bias=-0.000000, coverage=0.580
+  R2(alpha_fit)     MAE=0.010255, bias=+0.010255, coverage=0.840
+  mean alpha/QCAP = 1.8049
+  mean fit residual = 0.022635
+  median unexplained fraction = 0.0000
+
+depth=8
+  QCAP              MAE=0.122618, bias=+0.116803, coverage=0.900
+  exact(QCAP)       MAE=0.028717, bias=-0.023836, coverage=0.400
+  R2(QCAP)          MAE=0.023552, bias=-0.014368, coverage=0.500
+  exact(alpha_fit)  MAE=0.000000, bias=-0.000000, coverage=0.660
+  R2(alpha_fit)     MAE=0.011221, bias=+0.011221, coverage=0.860
+  mean alpha/QCAP = 1.8367
+  mean fit residual = 0.018151
+  median unexplained fraction = 0.0000
+
+depth=16
+  QCAP              MAE=0.199792, bias=+0.190517, coverage=0.920
+  exact(QCAP)       MAE=0.048830, bias=-0.043636, coverage=0.340
+  R2(QCAP)          MAE=0.036871, bias=-0.028020, coverage=0.440
+  exact(alpha_fit)  MAE=0.000000, bias=-0.000000, coverage=0.620
+  R2(alpha_fit)     MAE=0.019340, bias=+0.019340, coverage=0.800
+  mean alpha/QCAP = 1.4625
+  mean fit residual = 0.019245
+  median unexplained fraction = 0.0000
+
+depth=32
+  QCAP              MAE=0.289731, bias=+0.284630, coverage=0.920
+  exact(QCAP)       MAE=0.056015, bias=-0.056015, coverage=0.220
+  R2(QCAP)          MAE=0.036113, bias=-0.030985, coverage=0.360
+  exact(alpha_fit)  MAE=0.000000, bias=+0.000000, coverage=0.680
+  R2(alpha_fit)     MAE=0.029410, bias=+0.029410, coverage=0.780
+  mean alpha/QCAP = 1.2175
+  mean fit residual = 0.008643
+  median unexplained fraction = 0.0000
+
+
+Interpretation
+--------------
+1. If exact(alpha_fit) has low MAE, the global-depolarizing output model is accurate after the effective strength is known.
+2. If R2(alpha_fit) covers exact(alpha_fit) but R2(QCAP) fails, the entropy relaxation is not the problem; CB/QCAP is underestimating alpha.
+3. If exact(alpha_fit) remains inaccurate beyond the measured fit residual, the one-parameter global-depolarizing model is inadequate.
+4. The structured_failure_modes plot separates entropy effects, alpha miscalibration, and genuine white-noise-model failure.

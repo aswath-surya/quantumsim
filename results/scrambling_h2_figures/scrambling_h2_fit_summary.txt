@@ -1,0 +1,52 @@
+Scrambling H2 numerical fit summary
+==========================================
+
+Ensemble size per (mode, n, depth): 200
+Modes: ('random', 'structured')
+Qubit counts: [2, 3, 4, 5, 6, 7, 8]
+Circuit depths d: [1, 2, 4, 8, 16, 32, 64]
+CB-equivalent depths m_CB=2d: [2, 4, 8, 16, 32, 64, 128]
+Fits use deepest depth: d=64, m_CB=128
+
+RANDOM
+------
+Mean H2 fit: H2(n) = n - c + a 2^{-n}
+  c = 0.99255673 ± 0.00595
+  a = 1.590735 ± 0.0546
+  Haar expectation for sufficiently scrambling random circuits: c -> 1
+
+Mean R2 fit: R2(n) = R_inf + a 2^{-n} + b 2^{-2n}
+  R_inf = 0.50060784 ± 0.00145
+  a     = -0.69292441 ± 0.0406
+  b     = 0.42868099 ± 0.158
+  Haar expectation for sufficiently scrambling random circuits: R_inf -> 1/2
+
+Var(H2) fit: a 2^{-n} + b 2^{-2n}
+  a = 1.2624433 ± 0.0879
+  b = -3.3087829 ± 0.393
+
+Var(R2) fit: a 2^{-n} + b 2^{-2n}
+  a = 0.15543422 ± 0.0104
+  b = -0.37440158 ± 0.0464
+
+STRUCTURED
+----------
+Mean H2 fit: H2(n) = n - c + a 2^{-n}
+  c = 1.2535632 ± 0.0461
+  a = 1.5419314 ± 0.423
+  Haar expectation for sufficiently scrambling random circuits: c -> 1
+
+Mean R2 fit: R2(n) = R_inf + a 2^{-n} + b 2^{-2n}
+  R_inf = 0.59335768 ± 0.0232
+  a     = -1.5319824 ± 0.649
+  b     = 3.5242066 ± 2.53
+  Haar expectation for sufficiently scrambling random circuits: R_inf -> 1/2
+
+Var(H2) fit: a 2^{-n} + b 2^{-2n}
+  a = 15.548836 ± 7.06
+  b = -55.820028 ± 31.6
+
+Var(R2) fit: a 2^{-n} + b 2^{-2n}
+  a = 2.954353 ± 1.34
+  b = -10.56634 ± 6.01
+
