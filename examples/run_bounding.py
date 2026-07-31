@@ -1,5 +1,5 @@
-"""Bound circuit error from cycle benchmarking -- a hardware-free replica of the
-qcal `circuit_bounding` notebook.
+"""Bound circuit error from cycle benchmarking, with COHERENT noise -- a hardware-free
+replica of the qcal `circuit_bounding` notebook, extended past the Pauli-only regime.
 
 Pipeline (all synthetic, driven by a NoiseModel):
   1. Cycle-benchmark each distinct entangling cycle in the ansatz -> e_F per cycle.
@@ -10,7 +10,40 @@ Pipeline (all synthetic, driven by a NoiseModel):
      from its ideal distribution.
 
 Two ansaetze mirror the notebook: "random" (random single-qubit Cliffords) and
-"structured" (single-qubit gates drawn from {I, H, X}). Writes results/bounding.png.
+"structured" (single-qubit gates drawn from {I, H, X}).
+
+WHY TWO TVD SCATTERS
+--------------------
+The noise model now carries a coherent term (`theta_zz`, a residual always-on ZZ) on
+top of the Pauli channels. That breaks the assumption the bound rests on, so "the
+measured TVD" is no longer one number -- it depends on whether the circuit was
+randomly compiled, and the two answers are qualitatively different:
+
+  * randomly compiled -- RC tailors the coherent error into a Pauli channel, which is
+    the channel `cycle_benchmark` measures (it calls `.twirled()` internally, since it
+    runs in stim). The bound is valid for this series.
+  * NOT compiled -- the coherent error survives and accumulates in AMPLITUDE rather
+    than in probability. The bound does not cover this series, and it is the one that
+    lifts the "TVD == 0" band: uniform is a fixed point of every Pauli channel here,
+    so full-support instances sit at zero under RC but not without it.
+
+Plotting the bound against only the un-compiled series would be comparing a circuit to
+a bound for a different circuit, which is why both are shown.
+
+How each series is computed:
+  * RC'd: `simulate(..., noise=NOISE.twirled())` on the exact stim path. `.twirled()`
+    is the closed-form Pauli channel RC produces (cp(theta) -> p_IZ = p_ZI = p_ZZ =
+    sin^2(theta/2)/4), so this is exact and costs nothing extra. It is not an
+    assumption: `examples/run_coherent_rc.py` verifies it against actually running
+    `rc.pauli_twirl` over 24k randomizations, agreeing to TVD 0.0011 with a no-RC
+    control 47x further away.
+  * un-compiled: Monte-Carlo trajectories on the statevector backend, since a coherent
+    model is non-Clifford and stim cannot represent it.
+
+Set THETA_ZZ = 0.0 to recover the original Pauli-only run exactly (the two series then
+coincide, both taking the stim path).
+
+Writes results/bounding_{N}qubits.png.
 
 Run:  python examples/run_bounding.py
 """
@@ -32,85 +65,127 @@ from proxysim import (NoiseModel, bench_brickwork, even_pairs, odd_pairs, save_r
 from proxysim.backends.stabilizer import StabilizerBackend
 from proxysim.benchmarking import cycle_benchmark, qcap_bound, readout_fidelity
 
-N = 4
-CYCLE_A = even_pairs(N)        # (0,1) (2,3)   (marker 1 in the notebook)
-CYCLE_B = odd_pairs(N)         # (1,2)         (marker 2)
-DEPTHS = [1, 2, 4, 8, 16, 32]
-N_INSTANCES = 8                # random circuit instances per depth (TVD scatter)
-TVD_SHOTS = 4000
-SEED = 7
-NOISE = NoiseModel(enabled=True, p1=1e-3, p2=1e-2, p_readout=1e-2, p_idle=1e-3)
+N = 2
+# even/odd brickwork layers. odd_pairs(2) is EMPTY -- at n=2 there is no (1,2) pair --
+# so drop any empty layer: benchmarking it returns a spurious non-zero e_F (it still
+# has 1q + idle noise) and qcap_bound would then charge the bound for a cycle the
+# circuit never applies.
+CYCLES = {k: v for k, v in (("A", even_pairs(N)), ("B", odd_pairs(N))) if v}
+CYCLE_LIST = list(CYCLES.values())
+DEPTHS = [1, 2, 4, 8, 16, 32, 64]
+N_INSTANCES = 1000                # random circuit instances per depth (TVD scatter)
+TVD_SHOTS = 30              # sets the TVD noise floor (~0.003 here); sampling is
+                                 # setup-bound, so more shots are essentially free
+THETA_ZZ = 0.0                  # coherent residual-ZZ angle, rad. 0.0 -> Pauli only.
+N_TRAJ = 150                    # trajectories for the UN-COMPILED series. This sets a
+                                 # second noise floor on that series only: measured
+                                 # per-instance std is 0.011 at 200 trajectories and
+                                 # falls as 1/sqrt(N_TRAJ), so 1500 puts it near the
+                                 # 0.003 shot floor. It is also the whole runtime knob.
+SEED = 42
+NOISE = NoiseModel(enabled=True, p1=1e-3, p2=1e-2, p_readout=1e-2, p_idle=1e-3,
+                   theta_zz=THETA_ZZ)
+TWIRLED = NOISE.twirled()        # what RC produces, and what cycle_benchmark measures
 OUT_DATA = _bootstrap.RESULTS_DIR + "/bounding_data.npz"
 _SB = StabilizerBackend()
 
 
 def test_circuit(depth, mode, seed):
-    """depth reps of [1q layer, cycle A, 1q layer, cycle B] + a final 1q layer
-    (non-mirror). Cycle A and cycle B each appear `depth` times."""
+    """depth reps of [1q layer, cycle, ...] over the non-empty cycles + a final 1q
+    layer (non-mirror). Each cycle appears `depth` times."""
     oneq = "clifford" if mode == "random" else "structured"
-    return bench_brickwork(N, depth, [CYCLE_A, CYCLE_B], oneq=oneq, twoq="cz",
+    return bench_brickwork(N, depth, CYCLE_LIST, oneq=oneq, twoq="cz",
                            seed=seed, final_oneq=True)
 
 
-def noisy_tvd(circ):
-    """Full-distribution TVD (small n) between the ideal and the stim-sampled noisy
-    distribution."""
+def noisy_tvds(circ, seed):
+    """(TVD under randomized compiling, TVD without it) for one circuit instance.
+
+    `seed` must vary per instance, otherwise every point shares one shot-noise
+    realisation and the scatter understates the true spread.
+    """
     ideal = _SB.exact_distribution(circ)
-    noisy = simulate(circ, "stabilizer", "distribution", noise=NOISE,
-                     shots=TVD_SHOTS, seed=SEED)
-    return total_variation_distance(ideal, noisy)
+    rc = simulate(circ, "stabilizer", "distribution", noise=TWIRLED,
+                  shots=TVD_SHOTS, seed=seed)
+    #raw = simulate(circ, "statevector", "distribution", noise=NOISE,
+    #               shots=TVD_SHOTS, n_traj=N_TRAJ, seed=seed)
+    #return (total_variation_distance(ideal, rc)), total_variation_distance(ideal, raw))
+    return (total_variation_distance(ideal, rc)) 
 
 
 def run(mode):
     print(f"\n=== {mode} ansatz ===")
-    cbA = cycle_benchmark(CYCLE_A, N, [1, 2, 4, 8, 16, 24], NOISE, mode=mode, seed=1)
-    cbB = cycle_benchmark(CYCLE_B, N, [1, 2, 4, 8, 16, 24], NOISE, mode=mode, seed=2)
+    # cycle_benchmark runs in stim and so measures the TWIRLED channel -- the bound it
+    # feeds is therefore a bound on the randomly-compiled circuit.
+    cbs = {k: cycle_benchmark(pairs, N, [1, 2, 4, 8, 16, 24], NOISE, mode=mode,
+                              seed=1 + j)
+           for j, (k, pairs) in enumerate(CYCLES.items())}
     ro_fid, ro_std = readout_fidelity(N, NOISE, seed=3)
-    print(f"  cycle A (even pairs): e_F = {cbA['e_F']:.4f}")
-    print(f"  cycle B (middle):     e_F = {cbB['e_F']:.4f}")
+    for k, cb in cbs.items():
+        print(f"  cycle {k} {str(CYCLES[k]):<16} e_F = {cb['e_F']:.4f}")
     print(f"  readout fidelity:     {ro_fid:.4f} ({ro_std:.4f})")
 
-    efs = {"A": (cbA["e_F"], cbA["e_F_std"]), "B": (cbB["e_F"], cbB["e_F_std"])}
-    bounds, bstd, tvd_points = [], [], []
-    print(f"  {'depth':>6}{'bound':>10}{'mean TVD':>10}")
+    efs = {k: (cb["e_F"], cb["e_F_std"]) for k, cb in cbs.items()}
+    bounds, bstd, rc_points, raw_points = [], [], [], []
+    #print(f"  {'depth':>6}{'bound':>10}{'TVD (RC)':>11}{'TVD (no RC)':>13}")
+    print(f"  {'depth':>6}{'bound':>10}{'TVD (RC)':>11}")
+
     for d in DEPTHS:
-        b = qcap_bound({"A": d, "B": d}, efs, ro_fid, ro_std)
+        b = qcap_bound({k: d for k in CYCLES}, efs, ro_fid, ro_std)
         bounds.append(b["error"])
         bstd.append(b["std"])
-        tvds = [noisy_tvd(test_circuit(d, mode, SEED + 100 * i)) for i in range(N_INSTANCES)]
-        tvd_points.append(tvds)
-        print(f"  {d:>6}{b['error']:>10.4f}{np.mean(tvds):>10.4f}")
-    return bounds, bstd, tvd_points
+        #rc_d, raw_d = [], []
+        rc_d = []
+        for i in range(N_INSTANCES):
+            s = SEED + 100 * i     # stride leaves room for an independent shot seed
+            #v_rc, v_raw = noisy_tvds(test_circuit(d, mode, s), s + 1)
+            v_rc = noisy_tvds(test_circuit(d, mode, s), s + 1)
+            rc_d.append(v_rc); #raw_d.append(v_raw)
+        rc_points.append(rc_d); #raw_points.append(raw_d)
+        #over = int(np.sum(np.array(raw_d) > b["error"]))
+        #flag = f"   ({over}/{N_INSTANCES} over the bound)" if over else ""
+        #print(f"  {d:>6}{b['error']:>10.4f}{np.mean(rc_d):>11.4f}"
+        #      f"{np.mean(raw_d):>13.4f}{flag}", flush=True)
+        print(f"  {d:>6}{b['error']:>10.4f}{np.mean(rc_d):>11.4f}", flush=True)
+    return bounds, bstd, rc_points, raw_points
 
 
 def main():
+    print(f"coherent residual ZZ: theta_zz = {THETA_ZZ} rad  ->  twirled "
+          f"p_IZ = p_ZI = p_ZZ = {TWIRLED.p_zz:.5f} per 2q gate "
+          f"(vs p2 = {NOISE.p2} depolarizing)")
     data = {m: run(m) for m in ("random", "structured")}
 
-    kw = {"depths": np.array(DEPTHS)}
+    kw = {"depths": np.array(DEPTHS), "theta_zz": THETA_ZZ, "n_traj": N_TRAJ,
+          "tvd_shots": TVD_SHOTS}
     for m in data:
-        kw[f"{m}_bound"], kw[f"{m}_bound_std"], kw[f"{m}_tvd"] = \
-            np.array(data[m][0]), np.array(data[m][1]), np.array(data[m][2])
+        kw[f"{m}_bound"], kw[f"{m}_bound_std"] = np.array(data[m][0]), np.array(data[m][1])
+        kw[f"{m}_tvd"] = np.array(data[m][2])        # RC'd -- the bound applies to this
+        #kw[f"{m}_tvd_nonrc"] = np.array(data[m][3])  # un-compiled
     save_results(OUT_DATA, **kw)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.8), sharey=True)
     for ax, mode in zip(axes, ("random", "structured")):
-        bounds, bstd, tvd_points = data[mode]
+        bounds, bstd, rc_points, raw_points = data[mode]
         b, bs = np.array(bounds), np.array(bstd)
-        for d, tvds in zip(DEPTHS, tvd_points):
-            ax.plot([d] * len(tvds), tvds, "o", color="#0072B2", ms=5, alpha=0.7,
-                    label="measured TVD" if d == DEPTHS[0] else None)
-        ax.plot(DEPTHS, b, "-", color="#D55E00", lw=2, label="QCAP bound")
+        #for d, rc_d, raw_d in zip(DEPTHS, rc_points, raw_points):
+        for d, rc_d in zip(DEPTHS, rc_points):
+            #ax.plot([d] * len(raw_d), raw_d, "s", color="#009E73", ms=4, alpha=0.45,
+            #        label="measured TVD, NOT compiled" if d == DEPTHS[0] else None)
+            ax.plot([d] * len(rc_d), rc_d, "o", color="#0072B2", ms=5, alpha=0.7,
+                    label="measured TVD, randomly compiled" if d == DEPTHS[0] else None)
+        ax.plot(DEPTHS, b, "-", color="#D55E00", lw=2, label="QCAP bound (on the RC'd circuit)")
         ax.fill_between(DEPTHS, b - 2.96 * bs, b + 2.96 * bs, color="#D55E00", alpha=0.2)
-        ax.set_xscale("log", base=2)
         ax.set_xlabel("circuit depth")
         ax.set_title(f"{mode} ansatz", fontsize=11)
         ax.grid(True, which="both", alpha=0.15)
-        ax.legend(frameon=False, fontsize=9)
+        ax.legend(frameon=False, fontsize=8.5)
     axes[0].set_ylabel("probability of an error (TVD)")
     fig.suptitle("Bounding circuit error from cycle benchmarking "
-                 f"(n={N}, synthetic CB + noise model)", fontsize=12)
+                 f"(n={N}, synthetic CB + noise model, coherent "
+                 rf"$\theta_{{zz}}={THETA_ZZ}$)", fontsize=12)
     fig.tight_layout()
-    out = _bootstrap.RESULTS_DIR + "/bounding.png"
+    out = _bootstrap.RESULTS_DIR + "/bounding_{}qubits.png".format(N)
     fig.savefig(out, dpi=150)
     print(f"\nWrote {out}")
 

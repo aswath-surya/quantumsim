@@ -59,10 +59,14 @@ optional). Developed on Python 3.12 with quimb 1.12, qiskit 2.4, stim 1.15.
 | `simulate.py` | **the dispatcher** — `simulate()`, `make_backend`, `auto_simulator`, `noisy_survival`, `noisy_tvd_vs_support` |
 | `circuit.py` | backend-agnostic `Circuit`/`Gate` IR; builders (`lnn_brickwork`, `brickwork_magic`, `clifford_entropy_circuit`, `bench_brickwork`); `mirror()`/`inverse()`; `even_pairs`/`odd_pairs`; `GATE_SETS` |
 | `metrics.py` | distribution metrics (`total_variation_distance`, `classical_fidelity`, `shannon_entropy`, `tvd_to_ideal_support`) and result I/O (`save_results`/`load_results`, npz) |
-| `noise.py` | `NoiseModel` (one toggle, 4 Pauli channels: 2q/1q depolarizing, idle dephasing, readout); `to_stim_noisy` (native stim noise) and `sample_trajectory`/`apply_readout` (trajectories) |
+| `noise.py` | `NoiseModel` (one toggle; Pauli channels: 2q/1q depolarizing, idle dephasing, readout, Z dephasing, correlated ZZ — plus optional **coherent** `theta_1q`/`theta_zz`, off by default, and `.twirled()` for the exact Pauli channel RC produces); `to_stim_noisy` (native stim noise) and `sample_trajectory`/`apply_readout` (trajectories) |
 | `parallel.py` | single-node parallelism: `pmap`, `parallel_trajectories`, `sample_parallel`, with per-worker BLAS/thread pinning |
 | `runner.py` | `run_all()` — compares the exact output distribution across all backends (`ComparisonReport`) |
 | `benchmarking.py` | synthetic cycle benchmarking (`cycle_benchmark` via stim), `readout_fidelity`, the `qcap_bound`, `randomly_compile` |
+| `rc.py` | randomized compiling — `pauli_twirl` wraps every 2q gate in a random Pauli and its conjugate, leaving the unitary unchanged; full Pauli group on Clifford entanglers, commuting `{I,Z}²` subgroup on `cp(theta)` |
+| `cb_emit.py` | cycle-benchmarking circuits **as circuits** (rather than run in-process): `cb_circuit` builds one and returns the prep/measure Pauli, sign and support needed to analyze it; `survival` + `analyze_cb` turn shot data back into `e_F` |
+| `qasm.py` | `circuit_to_qasm` / `write_qasm` — the IR → OpenQASM 2.0 writer, exact inverse of `circuit_from_qasm` |
+| `mqtbank.py` | MQT Bench adapter: `fetch` (ALG level → IR), `repeat` (`U^d`), `cycle_census` (distinct entangling layers + multiplicities for the QCAP product), `proxies_for` |
 | `pauliprop.py` | `JuliaPauliPropagator` — wrapper around the real PauliPropagation.jl via juliacall; **expectation values only** |
 | `pauliprop_validator.py` | `PauliPropagator` — Julia-free reference for the same algorithm (uses `stim.PauliString` as a Pauli-algebra engine); **expectation values only** |
 | `viz.py` | matplotlib drawings: qiskit circuit, quimb tensor network, distribution bars, Pauli-prop coefficient panel |
@@ -94,10 +98,13 @@ optional). Developed on Python 3.12 with quimb 1.12, qiskit 2.4, stim 1.15.
 | `run_bounding_clifford.py` | 20-qubit Clifford mirror circuits: bound vs error |
 | `run_bound_vs_entropy.py` | bound looseness vs output Shannon entropy (fixed depth) |
 | `run_bound_vs_cycles.py` | bound vs TVD vs number of cycles at fixed entropy |
+| `run_coherent_rc.py` | coherent noise + randomized compiling: asserts (PASS/FAIL, self-calibrated tolerance) that RC of a `theta_zz` model reproduces `noise.twirled()`, then sweeps the angle to show the QCAP bound holding under RC and being violated at small angles without it |
 | `run_qpe_bounding.py` | real MQT QPE circuit (`qpe11.qasm`): CB bound vs full-distribution TVD, swept over noise strength |
 | `run_qft_bounding.py` | real MQT QFT circuit (`qft14.qasm`, non-Clifford): per-2q-gate dressed cycles, CB via Clifford proxy, summed-infidelity bound; shows the bound going vacuous when the ideal is a noise fixed point |
 | `run_qec_vs_random.py` | bound vs actual performance for two families as noise grows, all on one shared log axis: a random moderate-entropy circuit (bound vs output-distribution TVD) and a rotated surface code (AKN bound vs the actual full-record TVD vs the pymatching-decoded LER). The bound is *tight* on the full-record TVD in both cases; the surface code's orders-of-magnitude drop to the LER is entirely decoding, not bound looseness |
 | `run_parallel_hpc.py` | sample single-node parallel run (trajectories fanned across cores) |
+| `build_qasm_bank.py` | generates the RC/CB QASM bank from MQT Bench (see below) — the one example that writes circuits instead of running them |
+| `verify_qasm_bank.py` | correctness checks for that bank: QASM round-trip, RC unitary equivalence, RC-vs-coherent-noise, CB survival, `e_F` agreement with `cycle_benchmark` |
 
 `qpe11.qasm` is the 12-qubit MQT-Bench QPE circuit loaded via
 `proxysim.circuit.circuit_from_qasm`. Its ideal output is a delta at the correct
@@ -128,6 +135,69 @@ noise would show up; Pauli noise on `|+>^n` cannot.
 
 **root**: `pyproject.toml`, `requirements.txt`, `LICENSE`, `.gitignore`; `docs/`
 (committed figures for this README), `results/` (generated outputs, gitignored).
+
+## The RC/CB QASM bank
+
+`examples/build_qasm_bank.py` writes a corpus of standalone OpenQASM 2.0 files for an
+**external** runner — nothing in the bank is executed here. For each of six MQT Bench
+algorithms (`qft`, `qftentangled`, `ghz`, `graphstate`, `dj`, `wstate`) at
+n = 4, 6, …, 16 and depths 1, 2, 4, …, 128, with 20 randomizations each:
+
+```
+qasm_bank/
+  manifest.json                          # index: per (algorithm, n) gate counts,
+                                         # measured qubits, cycle census, proxies
+  base/qft/n08.qasm                      # untwirled source circuit
+  rc/qft/n08/d016/r03.qasm               # U^16, every 2q gate Pauli-twirled
+  cb/n08/cz_q0q1/d016/r03.qasm           # 16 dressed proxy cycles
+  cb/n08/cz_q0q1/d016/meta.json          # prep/meas Pauli, sign, support per r
+```
+
+```bash
+python examples/build_qasm_bank.py --dry-run     # 10,122 files, 292 MB
+python examples/build_qasm_bank.py
+python examples/verify_qasm_bank.py
+```
+
+Three things about it are worth knowing before consuming it.
+
+**RC depth is `U^d`.** A depth-`d` RC file is the algorithm repeated `d` times with
+every two-qubit gate independently wrapped in a random Pauli and its conjugate, so all
+20 randomizations at a given depth compute the *same* unitary (up to a global phase)
+with differently-conjugated noise. The twirl is **uncompiled** — the Paulis are explicit
+`x`/`y`/`z` gates rather than absorbed into neighbouring single-qubit gates the way
+True-Q does it — which costs roughly 2× the single-qubit gate count. Adjacent Paulis are
+merged, and a consumer that cares about the rest can run its own 1q optimization pass.
+At the algorithmic level `cp(theta)` is non-Clifford, so it is twirled only over the
+commuting `{I,Z}²` subgroup; Clifford entanglers get the full Pauli group.
+
+**CB files are shared across algorithms, and need their `meta.json`.** A CB circuit
+depends only on `(n, entangler, pair)`, not on which algorithm motivated it, so the bank
+stores one set per width — that is the difference between ~3k and ~50k CB files, and
+`manifest.json` records which proxies each algorithm needs. Following Merkel et al.
+(2503.05943), the non-Clifford `cp(theta)` is benchmarked with a **CZ proxy**: under
+gate-independent Pauli noise `e_F` is a property of the error channel, not the gate
+angle. A CB `.qasm` is **not analyzable on its own** — recovering the decay point needs
+the propagated Pauli's support and sign from the sidecar:
+
+```python
+survival = sign * mean(1 - 2 * parity(shot_bits[:, support]))   # exactly +1 noiseless
+```
+
+`proxysim.cb_emit.survival` and `analyze_cb` do this and the `A·f^m` fit, using the same
+conversion as `cycle_benchmark` (`e_F = (1 - 4^-n)(1 - f)`).
+
+**The QCAP bound needs the cycle census, not just the proxy.** CB is run on a couple of
+representative cycles, but the bound is a product over every cycle the circuit actually
+executes, `1 - F_RO · Π_c (1 - e_F_c)^{n_c}`. `manifest.json` carries the full census
+(each distinct entangling ASAP layer with its multiplicity), which is what
+`proxysim.benchmarking.qcap_bound` consumes.
+
+One caveat inherited from the protocol: `cycle_benchmark` reports `e_F` for the
+*Pauli-twirled* channel. A QCAP bound built from it describes a circuit that was
+actually randomly compiled — run the untwirled `base/` circuit on hardware with coherent
+error and the bound does not apply, because coherent error accumulates in amplitude
+rather than probability. `verify_qasm_bank.py` check 4 demonstrates exactly this gap.
 
 ## Running on an HPC node (parallel)
 
@@ -195,6 +265,25 @@ valid because the noise is Pauli). The bound is tight for low-entropy (mirror /
 Loschmidt-echo) outputs and loosens as the output entropy grows.
 
 ![bounding vs entropy](docs/bound_vs_entropy.png)
+
+**Coherent noise.** `theta_1q` (systematic `rz` over-rotation) and `theta_zz`
+(residual always-on ZZ) are optional, default-off, and non-Pauli — so
+`to_stim_noisy` refuses them and `simulate()` routes them to Monte-Carlo
+trajectories on a pure-state backend. They exist because every Pauli channel here
+is *unital*: uniform is a fixed point, so a Clifford circuit's noisy output stays
+flat on its ideal coset and the TVD is quantised by the support size (measured at
+n=4, depth 16: support 4/8/16 → 0.340/0.224/**0.001**, classes not overlapping).
+Turning on `theta_zz=0.15` alone gives 0.207/0.190/0.207 — classes overlapping and
+the full-support case no longer pinned at zero.
+
+`noise.twirled()` returns the exact Pauli channel randomized compiling produces
+(`rz(θ) → p_Z = sin²(θ/2)`; `cp(θ) → p_IZ = p_ZI = p_ZZ = sin²(θ/2)/4`), which is
+what `cycle_benchmark` measures. `examples/run_coherent_rc.py` validates that
+end-to-end against `rc.pauli_twirl` and shows the consequence: the QCAP bound
+covers a randomly-compiled circuit and *only* that one, since the twirled rate is
+`O(θ²)` while an un-compiled coherent error accumulates as `O(θ)`.
+
+![coherent noise and RC](docs/coherent_rc.png)
 
 ## Convention
 

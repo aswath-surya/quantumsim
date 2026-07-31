@@ -30,6 +30,11 @@ from . import noise
 from .noise import NoiseModel
 from . import benchmarking
 from .benchmarking import cycle_benchmark, qcap_bound, readout_fidelity
+# randomized compiling + QASM emission (building circuit banks for external runners)
+from . import rc, cb_emit, mqtbank
+from .rc import pauli_twirl, randomly_compile
+from .cb_emit import cb_circuit, survival, analyze_cb
+from .qasm import circuit_to_qasm, write_qasm
 # Pauli propagation
 from .pauliprop import JuliaPauliPropagator
 from .pauliprop_validator import PauliPropagator, expectation as pp_expectation
@@ -52,6 +57,9 @@ __all__ = [
     # noise / benchmarking
     "noise", "NoiseModel", "benchmarking", "cycle_benchmark", "qcap_bound",
     "readout_fidelity",
+    # randomized compiling / QASM emission
+    "rc", "cb_emit", "mqtbank", "pauli_twirl", "randomly_compile", "cb_circuit",
+    "survival", "analyze_cb", "circuit_to_qasm", "write_qasm",
     # pauli propagation
     "JuliaPauliPropagator", "PauliPropagator", "pp_expectation",
     # backends

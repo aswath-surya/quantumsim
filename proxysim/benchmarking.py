@@ -20,9 +20,10 @@ The three pieces mirror the notebook:
                                      (a straight port of the notebook's function).
 
 Note on twirling: on hardware you Pauli-twirl (randomly compile) to turn coherent
-error into a Pauli-stochastic channel so this all holds. Here the noise model is
-already Pauli-stochastic, so twirling is unnecessary for correctness; `randomly_compile`
-is provided for completeness and to mirror the workflow.
+error into a Pauli-stochastic channel so this all holds. `randomly_compile` synthesizes
+that twirl (implemented in `proxysim.rc`). Against a purely stochastic NoiseModel it is
+a no-op on the statistics; against one with a coherent term (`theta_1q`/`theta_zz`) it
+is what makes the channel match `NoiseModel.twirled()`, the model CB actually measures.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ import numpy as np
 import stim
 
 from .backends.stabilizer import _SIMPLE  # IR gate name -> stim name
+from .noise import _zz_channel_args
 
 _ONEQ_RANDOM = ["h", "s", "sdg", "x", "y", "z", "sx", "sxdg"]
 _ONEQ_STRUCTURED = ["i", "h", "x"]
@@ -86,11 +88,15 @@ def _apply_round(c: stim.Circuit, oneq: List[str], pairs: List[Tuple[int, int]],
         touched.add(q)
         if not ideal and noise.p1 > 0:
             c.append("DEPOLARIZE1", [q], noise.p1)
+        if not ideal and noise.p_z1 > 0:
+            c.append("Z_ERROR", [q], noise.p_z1)
     for a, b in pairs:                              # entangling layer (CZ or CX)
         c.append(twoq, [a, b])
         touched.update((a, b))
         if not ideal and noise.p2 > 0:
             c.append("DEPOLARIZE2", [a, b], noise.p2)
+        if not ideal and noise.p_zz > 0:
+            c.append("PAULI_CHANNEL_2", [a, b], _zz_channel_args(noise.p_zz))
     if not ideal and noise.p_idle > 0:              # idling dephasing on the rest
         idle = [q for q in range(n) if q not in {q for pr in pairs for q in pr}]
         if idle:
@@ -122,7 +128,16 @@ def cycle_benchmark(pairs, n: int, depths, noise, mode: str = "random",
     SPAM robustness: state-prep and readout errors scale the amplitude A but not the
     decay rate f, so e_F is SPAM-independent (readout enters the bound separately,
     via ``readout_fidelity``).
+
+    Coherent noise: CB runs entirely in stim, which cannot represent a coherent error,
+    so ``noise.twirled()`` is applied first and the returned e_F is that of the
+    PAULI-TWIRLED channel. That is not a workaround -- it is what the protocol measures
+    on hardware, where CB is run under randomized compiling precisely so the channel it
+    sees is the twirled one. The corollary matters for the QCAP bound: a circuit run
+    WITHOUT randomized compiling carries the untwirled coherent error, which accumulates
+    in amplitude rather than probability, and e_F from here will not describe it.
     """
+    noise = noise.twirled()
     rng = random.Random(seed)
     oneq_set = _ONEQ_RANDOM if mode == "random" else _ONEQ_STRUCTURED
     decay = []
@@ -243,26 +258,22 @@ def qcap_bound(cycle_counts: Dict[str, int], cycle_efs: Dict[str, Tuple[float, f
 # ---------------------------------------------------------------------------
 # Randomized compiling (Pauli twirl) -- provided to mirror the workflow.
 # ---------------------------------------------------------------------------
-def randomly_compile(circuit, n_compilations: int, seed: int = 0):
-    """Return ``n_compilations`` Pauli-twirled copies of ``circuit``.
+def randomly_compile(circuit, n_compilations: int, seed: int = 0, twirl: bool = True):
+    """Return ``n_compilations`` Pauli-twirled randomizations of ``circuit``.
 
-    A twirl inserts random Paulis around each entangling layer and corrects them
-    on the neighbouring single-qubit layers, leaving the ideal action unchanged
-    while tailoring the physical error toward Pauli-stochastic. Our NoiseModel is
-    ALREADY Pauli-stochastic (depolarizing + dephasing + bit-flip readout), so the
-    output is already twirl-averaged and a real twirl would be a no-op on the
-    statistics. This function therefore returns verbatim copies -- it documents
-    where RC sits in the workflow but does not synthesize the twirl. (A functional
-    twirl only earns its keep once coherent errors are added to the noise model.)
-    The twirling CB actually relies on -- random single-qubit layers around each
-    cycle -- IS implemented, inside ``cycle_benchmark``.
+    A twirl inserts random Paulis around each entangling gate and corrects them on the
+    far side, leaving the ideal action unchanged while tailoring the physical error
+    toward Pauli-stochastic. Implemented in :mod:`proxysim.rc`; this is a re-export so
+    RC sits next to CB and the QCAP bound, the workflow it belongs to.
+
+    Passing ``twirl=False`` returns verbatim copies instead. That is a useful control,
+    not a degenerate option: against a purely stochastic
+    :class:`~proxysim.noise.NoiseModel` (depolarizing + dephasing + bit-flip readout)
+    the channel is already twirl-averaged, so both modes must agree -- any discrepancy
+    is a bug. The twirl earns its keep once the model carries a coherent term
+    (``theta_1q``/``theta_zz``), where the twirled circuit reproduces
+    :meth:`~proxysim.noise.NoiseModel.twirled` and the untwirled one does not.
     """
-    from .circuit import Circuit
+    from .rc import randomly_compile as _rc
 
-    out = []
-    for _ in range(n_compilations):
-        nc = Circuit(circuit.n_qubits, name=circuit.name + "_rc")
-        for g in circuit.gates:
-            nc.gates.append(g)
-        out.append(nc)
-    return out
+    return _rc(circuit, n_compilations, seed=seed, twirl=twirl)

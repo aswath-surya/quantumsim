@@ -17,7 +17,12 @@ env/
 results/*.txt
 results/*.png
 
+# Generated QASM bank (regenerate with examples/build_qasm_bank.py) -- multi-GB
+qasm_bank/
+
 # OS / editor
 .DS_Store
 .vscode/
 .idea/
+.env
+.envrc

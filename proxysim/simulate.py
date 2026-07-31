@@ -26,7 +26,7 @@ import numpy as np
 
 from . import metrics  # noqa: F401  (kept for convenience re-export)
 from .backends import StabilizerBackend, StatevectorBackend, TensorNetworkBackend
-from .noise import sample_trajectory, to_stim_noisy
+from .noise import apply_readout_to_distribution, sample_trajectory, to_stim_noisy
 
 _SV_ALIASES = {"statevector", "sv", "qiskit"}
 _TN_ALIASES = {"tensornetwork", "tn", "mps", "quimb"}
@@ -108,12 +108,44 @@ def noisy_survival(circuit, noise, simulator="auto", n_traj=2000, seed=0,
 
 
 # ---------------------------------------------------------------------------
+# Trajectory-averaged noisy distribution (non-Clifford and/or coherent noise).
+# ---------------------------------------------------------------------------
+def _trajectory_distribution(circuit, noise, backend, n_traj, shots, seed):
+    """Mean Z-basis distribution over ``n_traj`` noisy trajectories.
+
+    Each trajectory is a pure state, so its exact distribution is read off directly
+    and averaged -- far lower variance than sampling shots per trajectory. Readout
+    error is then applied analytically, and the result is multinomial-resampled to
+    ``shots`` (when ``shots > 0``) so the shot-noise semantics match the stim path.
+    """
+    n = circuit.n_qubits
+    acc = np.zeros(2 ** n)
+    rng = random.Random(seed)
+    for _ in range(n_traj):
+        traj = sample_trajectory(circuit, noise, rng)
+        for key, p in backend.exact_distribution(traj).items():
+            acc[sum(int(b) << j for j, b in enumerate(key))] += p   # q0 leftmost
+    acc /= n_traj
+    acc = apply_readout_to_distribution(acc, noise, n)
+
+    if shots and shots > 0:
+        acc = np.random.default_rng(seed).multinomial(shots, acc / acc.sum()) / shots
+    return {"".join(str((i >> j) & 1) for j in range(n)): float(acc[i])
+            for i in np.nonzero(acc > 0)[0]}
+
+
+# ---------------------------------------------------------------------------
 # The unified dispatcher.
 # ---------------------------------------------------------------------------
 def simulate(circuit, simulator="auto", output="distribution", noise=None,
              shots=0, seed=1234, max_bond=None, gpu=False, observable=None,
              n_traj=2000, parallel=False, n_workers=None):
-    """Dispatch by (simulator, output). See module docstring for the axes."""
+    """Dispatch by (simulator, output). See module docstring for the axes.
+
+    ``shots`` for a NOISY distribution: the trajectory path treats ``shots=0`` as
+    "return the exact trajectory-averaged distribution, no shot noise"; the stim path
+    can only sample and raises instead of returning a one-shot histogram.
+    """
     sim = auto_simulator(circuit) if simulator == "auto" else simulator.lower()
 
     # -- expectation values go through Pauli propagation, a separate modality --
@@ -128,17 +160,31 @@ def simulate(circuit, simulator="auto", output="distribution", noise=None,
     if output == "distribution":
         if noise is None:
             return backend.exact_distribution(circuit)
-        # noisy distribution: stim samples it natively for Clifford circuits
-        if circuit.is_clifford:
-            arr = to_stim_noisy(circuit, noise).compile_sampler(seed=seed).sample(max(shots, 1))
+        # Noisy distribution. Stim samples it natively for a Clifford circuit under
+        # Pauli noise -- exact and much faster, so it stays the preferred path. Note
+        # this branches on the CIRCUIT before the requested simulator, so an explicit
+        # simulator='statevector' is ignored for Clifford circuits; that predates
+        # coherent noise and is left as-is. A coherent model is non-Clifford by
+        # construction and always falls through to trajectories.
+        if circuit.is_clifford and not noise.has_coherent:
+            if shots <= 0:
+                # This path can only SAMPLE, so shots=0 would silently return a
+                # one-shot histogram (a delta) rather than the exact distribution the
+                # trajectory path below returns for shots=0. Refuse rather than
+                # quietly hand back something that looks like a distribution.
+                raise ValueError(
+                    "simulate(output='distribution', noise=...): the stim path samples, "
+                    "so it needs shots > 0. (shots=0 means 'exact' only on the "
+                    "trajectory path, which stim-representable circuits do not take.)")
+            arr = to_stim_noisy(circuit, noise).compile_sampler(seed=seed).sample(shots)
             counts = {}
             for row in arr:
                 k = "".join("1" if b else "0" for b in row)
                 counts[k] = counts.get(k, 0) + 1
             tot = sum(counts.values()) or 1
             return {k: v / tot for k, v in counts.items()}
-        raise NotImplementedError("noisy full distribution for non-Clifford: use "
-                                  "output='survival' (or aggregate trajectories yourself)")
+        return _trajectory_distribution(circuit, noise, backend, n_traj=n_traj,
+                                        shots=shots, seed=seed)
 
     if output == "samples":
         return backend.run(circuit, shots=shots, seed=seed).counts

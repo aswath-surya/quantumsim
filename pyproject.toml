@@ -36,6 +36,8 @@ pauliprop = ["juliacall"]
 # Surface-code decoding for examples/run_qec_vs_random.py (LER via minimum-weight
 # perfect matching on stim's detector error model).
 qec = ["pymatching>=2.0"]
+# Algorithmic benchmark circuits for examples/build_qasm_bank.py (RC/CB QASM bank).
+bench = ["mqt.bench>=2.0"]
 # GPU acceleration (CUDA 12.x). Platform-specific; install manually as needed.
 # gpu = ["cupy-cuda12x", "qiskit-aer-gpu", "cuquantum-python"]
 dev = ["pytest"]
