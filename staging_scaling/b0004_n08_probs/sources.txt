@@ -1,0 +1,6 @@
+tvd_n08_random_d064_i000_ideal_k000_l1_c0x0.cpp
+tvd_n08_random_d064_i000_ideal_k000_m.cpp
+tvd_n08_random_d064_i000_noisy_k000_l1_c0x0.cpp
+tvd_n08_random_d064_i000_noisy_k000_m.cpp
+tvd_n08_random_d064_i000_rc_k000_l1_c0x0.cpp
+tvd_n08_random_d064_i000_rc_k000_m.cpp

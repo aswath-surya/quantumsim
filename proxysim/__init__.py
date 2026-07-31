@@ -35,6 +35,11 @@ from . import rc, cb_emit, mqtbank
 from .rc import pauli_twirl, randomly_compile
 from .cb_emit import cb_circuit, survival, analyze_cb
 from .qasm import circuit_to_qasm, write_qasm
+# C-3PQ bridge (staging circuits for the external distributed simulator)
+from . import c3pq
+from .c3pq import (lower_for_c3pq, c3pq_qasm, stage_name, prefix_symbols,
+                   entry_symbol, emit_batch_harness, parity_masks,
+                   read_probs, read_parity, read_norms, read_topk)
 # Pauli propagation
 from .pauliprop import JuliaPauliPropagator
 from .pauliprop_validator import PauliPropagator, expectation as pp_expectation
@@ -60,6 +65,10 @@ __all__ = [
     # randomized compiling / QASM emission
     "rc", "cb_emit", "mqtbank", "pauli_twirl", "randomly_compile", "cb_circuit",
     "survival", "analyze_cb", "circuit_to_qasm", "write_qasm",
+    # C-3PQ bridge
+    "c3pq", "lower_for_c3pq", "c3pq_qasm", "stage_name", "prefix_symbols",
+    "entry_symbol", "emit_batch_harness", "parity_masks",
+    "read_probs", "read_parity", "read_norms", "read_topk",
     # pauli propagation
     "JuliaPauliPropagator", "PauliPropagator", "pp_expectation",
     # backends

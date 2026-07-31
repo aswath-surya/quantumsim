@@ -99,21 +99,35 @@ optional). Developed on Python 3.12 with quimb 1.12, qiskit 2.4, stim 1.15.
 | `run_bound_vs_entropy.py` | bound looseness vs output Shannon entropy (fixed depth) |
 | `run_bound_vs_cycles.py` | bound vs TVD vs number of cycles at fixed entropy |
 | `run_coherent_rc.py` | coherent noise + randomized compiling: asserts (PASS/FAIL, self-calibrated tolerance) that RC of a `theta_zz` model reproduces `noise.twirled()`, then sweeps the angle to show the QCAP bound holding under RC and being violated at small angles without it |
-| `run_qpe_bounding.py` | real MQT QPE circuit (`qpe11.qasm`): CB bound vs full-distribution TVD, swept over noise strength |
-| `run_qft_bounding.py` | real MQT QFT circuit (`qft14.qasm`, non-Clifford): per-2q-gate dressed cycles, CB via Clifford proxy, summed-infidelity bound; shows the bound going vacuous when the ideal is a noise fixed point |
+| `run_qpe_bounding.py` | `run_bounding.py`'s RC/CB analysis on a real MQT QPE circuit (`qpe11.qasm`): CB bound vs full-distribution TVD **vs depth**, depth = `U^d` as in the QASM bank. Same figure idiom as `run_bounding.py` — every TVD measurement scattered on linear axes against the bound, nothing fitted; a QASM file is one circuit, so the spread is over independent trajectory ensembles rather than over circuit instances |
+| `run_qft_bounding.py` | same, on the non-Clifford MQT QFT circuit (`qft14.qasm`): per-2q-gate dressed cycles, CB via Clifford proxy, scattered TVD vs bound **vs depth**; `U^d` alternates between a uniform ideal (bound goes vacuous — a noise fixed point) and a mirror ideal (every error visible), so the odd-`d` columns are shaded and the even-`d` points are the ones to read the bound against |
 | `run_qec_vs_random.py` | bound vs actual performance for two families as noise grows, all on one shared log axis: a random moderate-entropy circuit (bound vs output-distribution TVD) and a rotated surface code (AKN bound vs the actual full-record TVD vs the pymatching-decoded LER). The bound is *tight* on the full-record TVD in both cases; the surface code's orders-of-magnitude drop to the LER is entirely decoding, not bound looseness |
 | `run_parallel_hpc.py` | sample single-node parallel run (trajectories fanned across cores) |
 | `build_qasm_bank.py` | generates the RC/CB QASM bank from MQT Bench (see below) — the one example that writes circuits instead of running them |
 | `verify_qasm_bank.py` | correctness checks for that bank: QASM round-trip, RC unitary equivalence, RC-vs-coherent-noise, CB survival, `e_F` agreement with `cycle_benchmark` |
 
+Both QASM examples sweep **depth**, not noise strength, and they take depth to mean
+what the RC/CB QASM bank means by it (`manifest.json`: `"U^d, every 2q gate
+independently Pauli-twirled"` / `"d repetitions of a dressed Clifford-proxy cycle"`):
+depth `d` is the loaded circuit repeated `d` times, `U^d`. Each cycle of the census
+then occurs `d ×` its per-repetition count, which is exactly the exponent the QCAP
+bound wants, and it matches the "each cycle appears `depth` times" that
+`bench_brickwork` gives `run_bounding.py`. `e_F` is a property of the noise, not of
+`d`, so CB runs once per script and only the exponents move. Both also carry
+`run_bounding.py`'s RC comparison: the bound is a bound on the *randomly compiled*
+circuit (CB runs in stim and so measures `noise.twirled()`), and with `THETA_ZZ > 0`
+a second, un-compiled TVD series is plotted as the control the bound does not cover.
+Each point's trajectory noise floor is measured — TVD between two half-ensembles —
+rather than assumed.
+
 `qpe11.qasm` is the 12-qubit MQT-Bench QPE circuit loaded via
-`proxysim.circuit.circuit_from_qasm`. Its ideal output is a delta at the correct
-phase, so the full-distribution TVD collapses to `1 - P(peak)`; the bound is
-correspondingly tight (a delta ideal is maximally far from uniform). The ideal is
-read exactly off the MPS backend (bond 1 — a product state), but the noisy sweep
-runs on the statevector backend: at n=12 QPE's all-to-all inverse-QFT is SWAP-bound
-and MPS is ~25x slower, since MPS only pays off for local, bounded-entanglement
-circuits.
+`proxysim.circuit.circuit_from_qasm`. At `d = 1` its ideal output is a delta at the
+correct phase, so the full-distribution TVD collapses to `1 - P(peak)` and the bound
+is correspondingly tight (a delta ideal is maximally far from uniform); at `d > 1`
+the ideal is a general distribution and the full TVD on the 11 measured qubits is
+used. Everything runs on the statevector backend (n=12, exact): at this width QPE's
+all-to-all inverse-QFT is SWAP-bound and MPS is ~25x slower, since MPS only pays off
+for local, bounded-entanglement circuits.
 
 `qft14.qasm` (MQT QFT-14) is **non-Clifford** -- its `cp(pi/2^k)` gates are
 controlled-phases that stim cannot simulate and that standard Clifford cycle
@@ -123,15 +137,30 @@ proxy** (Merkel et al. 2503.05943): each 2q gate is its own dressed cycle
 (single-qubit layer, which absorbs the Hadamards + Pauli twirl, plus the entangling
 gate plus idle dephasing), and CB benchmarks the *noise* that gate carries via a
 Clifford entangler (CZ = `cp(pi)`); under gate-independent Pauli noise the proxy
-`e_F` equals the real gate's. The example also illustrates the looseness extreme:
-`QFT|0...0> = |+>^n` is a product state whose uniform Z-basis readout is a
-**Pauli-noise fixed point**, so the actual Z-basis TVD is identically 0 while the
-bound climbs to 1 -- the opposite of QPE's tight delta-ideal bound. This is NOT "no
-noise": the plot also shows the state infidelity `1 - <psi|rho|psi>` rising to ~0.5,
-and an exact density-matrix simulation confirms the state goes nearly maximally mixed
-(fidelity ~0.26, purity ~0.08 at p1=2e-2, p2=5e-2) while the TVD stays 0 to machine
-precision. The readout basis is simply blind to the damage -- coherent (non-Pauli)
-noise would show up; Pauli noise on `|+>^n` cannot.
+`e_F` equals the real gate's. Sweeping `U^d` walks this example past *both* extremes
+of what a TVD can report, because the DFT has order 4 (`F^2` = reversal, `F^4 = I`)
+and the MQT circuit includes its output swaps:
+
+* **odd `d`** — `U^d|0...0> = |+>^14`, a product state whose uniform Z-basis readout
+  is a **Pauli-noise fixed point**, so the actual Z-basis TVD is identically 0 while
+  the bound climbs toward 1. The looseness extreme. This is NOT "no noise": the state
+  infidelity `1 - <psi|rho|psi>` rises monotonically straight through those points (an
+  exact density-matrix simulation confirms the state goes nearly maximally mixed —
+  fidelity ~0.26, purity ~0.08 at p1=2e-2, p2=5e-2 — while the TVD stays 0 to machine
+  precision). That series is no longer plotted, since it cannot come from `simulate()`
+  and is not part of `run_bounding.py`'s process; the odd-`d` columns are shaded
+  instead to mark where the readout is blind. The readout basis is simply
+  blind to the damage; coherent (non-Pauli) noise does show up, which is what the
+  `THETA_ZZ > 0` series demonstrates — from `d = 3` on, since a residual ZZ is itself
+  diagonal and the QFT's only non-diagonal entanglers (its 7 output swaps) sit at the
+  very end of a single repetition.
+* **even `d`** — `U^d` is a mirror circuit, the ideal is an exact delta on `|0...0>`,
+  and every error is visible. The tight corner, and the points to read the bound
+  against.
+
+Measured at noise scale 0.25 (`p2 = 2.5e-4`), the bound holds at every depth on both
+circuits: QPE runs 0.10 → 0.82 against a TVD of 0.07 → 0.25 over `d = 1…16`, and QFT
+runs 0.17 → 0.76 against 0.00 (odd `d`) / 0.04 → 0.20 (even `d`) over `d = 1…8`.
 
 **root**: `pyproject.toml`, `requirements.txt`, `LICENSE`, `.gitignore`; `docs/`
 (committed figures for this README), `results/` (generated outputs, gitignored).

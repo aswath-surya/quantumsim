@@ -38,7 +38,11 @@ The emitted twirl is *uncompiled*: the Paulis appear as explicit ``x``/``y``/``z
 rather than being absorbed into neighbouring single-qubit gates (True-Q compiles them
 into the surrounding 1q layer). Adjacent Paulis on the same qubit are merged, which
 removes most of the overhead; a consumer that cares about the rest can run its own
-single-qubit optimization pass.
+single-qubit optimization pass. What is left over is not free: a noise model that
+charges error per single-qubit *gate* would charge the twirled circuit more than the
+original and make RC look worse than it is, purely as an artefact of not compiling.
+:func:`pauli_twirl` therefore takes ``mark_virtual``, which reports exactly which output
+gates came from the twirl so the noise model can skip them.
 """
 
 from __future__ import annotations
@@ -123,18 +127,34 @@ def twirl_options(gate: Gate) -> Tuple[Tuple[str, ...], Optional[Dict[str, str]]
 # The twirl
 # ---------------------------------------------------------------------------
 def pauli_twirl(circuit: Circuit, rng: random.Random,
-                name_suffix: str = "_rc") -> Circuit:
+                name_suffix: str = "_rc", mark_virtual: bool = False):
     """Return one Pauli-twirled randomization of ``circuit``.
 
     Every two-qubit gate is independently wrapped in a random Pauli and its conjugate.
     The result implements the same unitary as ``circuit`` up to a global phase.
     Single-qubit gates are left alone; adjacent Paulis (including ones already present
     in the source circuit) are merged by :func:`_merge_paulis`.
+
+    With ``mark_virtual=True`` the return is ``(circuit, virtual)``, where ``virtual``
+    is a frozenset of indices into ``circuit.gates`` naming the gates that exist *only*
+    because of the twirl. Those are frame changes: on hardware the twirl Pauli is
+    compiled into the neighbouring single-qubit pulse rather than played as an extra
+    operation, so they should be charged no gate error. Pass the set to
+    :func:`proxysim.noise.sample_trajectory` as its ``virtual`` argument and the twirled
+    circuit carries exactly the noise budget the un-twirled one does -- which is what
+    makes an RC-vs-raw comparison a comparison of the *channel* rather than of the gate
+    count. A merged Pauli counts as virtual only if every Pauli that went into it did.
     """
     out: List[Gate] = []
+    virt: List[bool] = []
+
+    def emit(gate: Gate, is_virtual: bool) -> None:
+        out.append(gate)
+        virt.append(is_virtual)
+
     for g in circuit.gates:
         if len(g.qubits) != 2:
-            out.append(g)
+            emit(g, False)
             continue
         paulis, table = twirl_options(g)
         p = rng.choice(paulis)
@@ -142,18 +162,22 @@ def pauli_twirl(circuit: Circuit, rng: random.Random,
         a, b = g.qubits
         for q, letter in ((a, p[0]), (b, p[1])):
             if letter != "I":
-                out.append(Gate(_GATE_OF[letter], (q,)))
-        out.append(g)
+                emit(Gate(_GATE_OF[letter], (q,)), True)
+        emit(g, False)
         for q, letter in ((a, p_after[0]), (b, p_after[1])):
             if letter != "I":
-                out.append(Gate(_GATE_OF[letter], (q,)))
+                emit(Gate(_GATE_OF[letter], (q,)), True)
 
     twirled = Circuit(circuit.n_qubits, name=circuit.name + name_suffix)
-    twirled.gates = _merge_paulis(out, circuit.n_qubits)
-    return twirled
+    if not mark_virtual:
+        twirled.gates = _merge_paulis(out, circuit.n_qubits)
+        return twirled
+    twirled.gates, merged_virt = _merge_paulis(out, circuit.n_qubits, virtual=virt)
+    return twirled, frozenset(i for i, v in enumerate(merged_virt) if v)
 
 
-def _merge_paulis(gates: List[Gate], n_qubits: int) -> List[Gate]:
+def _merge_paulis(gates: List[Gate], n_qubits: int,
+                  virtual: Optional[List[bool]] = None):
     """Collapse runs of single-qubit Paulis on the same qubit into one gate.
 
     A Pauli is deferred on its qubit and flushed just before the next gate touching
@@ -161,25 +185,49 @@ def _merge_paulis(gates: List[Gate], n_qubits: int) -> List[Gate]:
     commute with it. This is what removes most of the twirl's gate-count overhead,
     since the correction ``P'`` of one entangler and the fresh ``P`` of the next
     entangler on the same qubit land side by side.
+
+    ``virtual`` is an optional per-input-gate flag list; when given the return is
+    ``(gates, virtual)`` with the flags carried through the merge, and the merge becomes
+    *pulse-count preserving*: a run containing a real (non-twirl) Pauli always flushes
+    exactly one real gate, falling back to ``i`` when the twirl Paulis cancelled it.
+    Both halves of that matter. ``GATE_SETS["structured"]`` -- run_bounding's second
+    ansatz -- is ``["i", "h", "x"]``, so circuit Paulis and twirl Paulis really do meet:
+    without the flag propagation the merged gate would be mistaken for a frame change
+    and charged nothing; without the ``i`` filler the cancelling case would delete a
+    pulse the hardware still has to play. Either way the twirled circuit would end up
+    with a different noise budget from the circuit it was twirled from, which is the one
+    thing an RC-vs-raw comparison cannot tolerate.
     """
+    flags = [False] * len(gates) if virtual is None else virtual
     pending = ["I"] * n_qubits
+    pending_real = [False] * n_qubits
     out: List[Gate] = []
+    out_virtual: List[bool] = []
 
     def flush(qubits):
         for q in qubits:
             if pending[q] != "I":
                 out.append(Gate(_GATE_OF[pending[q]], (q,)))
-                pending[q] = "I"
+                out_virtual.append(not pending_real[q])
+            elif pending_real[q] and virtual is not None:
+                out.append(Gate("i", (q,)))
+                out_virtual.append(False)
+            pending[q] = "I"
+            pending_real[q] = False
 
-    for g in gates:
+    for g, is_virtual in zip(gates, flags):
         if len(g.qubits) == 1 and g.name in _PAULI_GATES:
             q = g.qubits[0]
             pending[q] = _MUL[(pending[q], _PAULI_GATES[g.name])]
+            pending_real[q] = pending_real[q] or not is_virtual
             continue
         flush(g.qubits)
         out.append(g)
+        out_virtual.append(is_virtual)
     flush(range(n_qubits))
-    return out
+    if virtual is None:
+        return out
+    return out, out_virtual
 
 
 def randomly_compile(circuit: Circuit, n_compilations: int, seed: int = 0,

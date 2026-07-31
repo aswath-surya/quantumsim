@@ -1,0 +1,30 @@
+// lowered for C-3PQ from n12/cal/cal_n12_probe/cal_n12_probe_k000.qasm
+// batch=b0006_n12_topk prefix=s00000 group=0
+OPENQASM 2.0;
+include "qelib1.inc";
+qreg q[12];
+creg c[12];
+ry(0.10545811702189993) q[0];
+ry(0.14920957360514867) q[1];
+ry(0.18282871674409476) q[2];
+ry(0.2112108803591783) q[3];
+ry(0.23625130598477045) q[4];
+ry(0.2589215420062212) q[5];
+ry(0.27979847592703433) q[6];
+ry(0.2992578187190349) q[7];
+ry(0.31756042929152134) q[8];
+ry(0.3348961584393787) q[9];
+ry(0.35140826979522916) q[10];
+ry(0.36720802055783713) q[11];
+measure q[0] -> c[0];
+measure q[1] -> c[1];
+measure q[2] -> c[2];
+measure q[3] -> c[3];
+measure q[4] -> c[4];
+measure q[5] -> c[5];
+measure q[6] -> c[6];
+measure q[7] -> c[7];
+measure q[8] -> c[8];
+measure q[9] -> c[9];
+measure q[10] -> c[10];
+measure q[11] -> c[11];

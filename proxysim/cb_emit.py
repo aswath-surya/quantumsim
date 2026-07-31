@@ -45,7 +45,8 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
-from .benchmarking import _ONEQ_RANDOM, _fit_decay, _letters, _rand_pauli
+from .benchmarking import (_ONEQ_RANDOM, _ONEQ_STRUCTURED, _fit_decay, _letters,
+                           _rand_pauli)
 from .circuit import Circuit, Gate
 
 # Algorithmic 2q gate -> the Clifford entangler used to benchmark the noise it carries.
@@ -97,15 +98,22 @@ def _to_stim(circ: Circuit):
 # One CB circuit
 # ---------------------------------------------------------------------------
 def cb_circuit(n: int, pairs: Sequence[Tuple[int, int]], depth: int,
-               rng: random.Random, twoq: str = "cz") -> Tuple[Circuit, dict]:
+               rng: random.Random, twoq: str = "cz",
+               oneq: Sequence[str] = _ONEQ_RANDOM) -> Tuple[Circuit, dict]:
     """Build one cycle-benchmarking circuit and the metadata needed to analyze it.
 
     Returns ``(circuit, meta)`` with ``meta`` carrying ``prep_pauli``, ``meas_pauli``,
     ``sign`` and ``support`` -- see the module docstring for why the QASM alone is not
     enough.
+
+    ``oneq`` is the single-qubit dressing set, matching ``cycle_benchmark``'s ``mode``:
+    ``_ONEQ_RANDOM`` (the default) is ``mode="random"``, ``_ONEQ_STRUCTURED`` is
+    ``mode="structured"``. It must stay Clifford -- the twirl the CB protocol relies on
+    is a twirl over the Clifford group, and the propagated Pauli below is computed with
+    a stim tableau.
     """
     P = _rand_pauli(n, rng)
-    rounds = [[rng.choice(_ONEQ_RANDOM) for _ in range(n)] for _ in range(depth)]
+    rounds = [[rng.choice(oneq) for _ in range(n)] for _ in range(depth)]
 
     # The ideal (noiseless) Clifford C^m, used only to propagate P -> P_m.
     ideal = Circuit(n, name="cb_ideal")
@@ -128,6 +136,7 @@ def cb_circuit(n: int, pairs: Sequence[Tuple[int, int]], depth: int,
         "n_qubits": n,
         "depth": depth,
         "twoq": twoq,
+        "oneq": list(oneq),
         "pairs": [list(p) for p in pairs],
         "prep_pauli": P,
         "meas_pauli": letters_m,

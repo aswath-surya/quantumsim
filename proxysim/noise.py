@@ -50,7 +50,7 @@ import dataclasses
 import itertools
 import math
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, List, Optional, Tuple
 
 import stim
 
@@ -215,7 +215,54 @@ def to_stim_noisy(circuit, noise: NoiseModel) -> stim.Circuit:
 # ---------------------------------------------------------------------------
 # Trajectory application (for pure-state backends: statevector / MPS)
 # ---------------------------------------------------------------------------
-def sample_trajectory(circuit, noise: NoiseModel, rng):
+def _noise_layers(circuit, virtual):
+    """ASAP layers of ``(index, gate)``, with virtual gates folded into a real layer.
+
+    With ``virtual`` empty this is exactly ``circuit.layers()`` (same greedy ASAP, same
+    within-layer order), paired with each gate's index. Otherwise the layer partition is
+    built over the *physical* gates only and each virtual gate is placed in the layer of
+    the next physical gate on its qubit -- so a run of twirl Paulis does not push the
+    circuit out to more layers than the circuit it was twirled from.
+
+    Layer count is what idling noise is charged against, so getting this wrong is not
+    cosmetic: a twirled circuit that layers longer than its untwirled original collects
+    extra ``p_idle`` and loses to it for a reason that has nothing to do with the
+    channel being compared. Per-qubit gate order is preserved -- a virtual gate lands
+    strictly after the previous physical gate on its qubit (earlier layer, or earlier
+    index within the same layer) and strictly before the next one.
+    """
+    gates = circuit.gates
+    n = circuit.n_qubits
+    frontier = [0] * n
+    layer_of: List[Optional[int]] = [None] * len(gates)
+    for i, g in enumerate(gates):
+        if i in virtual:
+            continue
+        t = max(frontier[q] for q in g.qubits)
+        for q in g.qubits:
+            frontier[q] = t + 1
+        layer_of[i] = t
+    n_layers = max(frontier) if gates else 0
+    if gates and n_layers == 0:            # every gate virtual: one layer to hold them
+        n_layers = 1
+
+    # Backward pass: a virtual gate inherits the layer of the next physical gate on its
+    # qubit, or the last layer if it trails the end of the circuit.
+    nxt = [n_layers - 1] * n
+    for i in range(len(gates) - 1, -1, -1):
+        if layer_of[i] is None:
+            layer_of[i] = nxt[gates[i].qubits[0]]
+        else:
+            for q in gates[i].qubits:
+                nxt[q] = layer_of[i]
+
+    out = [[] for _ in range(n_layers)]        # layer -> [(gate index, gate), ...]
+    for i, g in enumerate(gates):
+        out[layer_of[i]].append((i, g))
+    return out
+
+
+def sample_trajectory(circuit, noise: NoiseModel, rng, virtual=()):
     """Return a NEW Circuit with one sampled Pauli-error realisation spliced in.
 
     Coherent terms (``theta_1q`` / ``theta_zz``) are deterministic unitaries, not
@@ -231,15 +278,28 @@ def sample_trajectory(circuit, noise: NoiseModel, rng):
 
     Readout error is NOT applied here -- apply :func:`apply_readout` to the
     measured bitstring, or :func:`apply_readout_to_distribution` to a distribution.
+
+    ``virtual`` is a collection of indices into ``circuit.gates`` for gates that are
+    *frame changes* rather than physical operations -- the Pauli-twirl gates reported by
+    :func:`proxysim.rc.pauli_twirl` with ``mark_virtual=True``, which real hardware folds
+    into the neighbouring single-qubit pulse. They are copied into the output circuit
+    (the unitary must not change) but are invisible to the noise: they carry no gate
+    error, they do not stop a qubit counting as idle, and (via :func:`_noise_layers`)
+    they do not lengthen the circuit. Without this a twirled circuit is charged more
+    ``p1`` and more ``p_idle`` than the circuit it was twirled from, and an RC-vs-raw
+    comparison measures the gate count instead of the channel.
     """
     from .circuit import Circuit
 
     nc = Circuit(circuit.n_qubits, name=circuit.name + "_traj")
     n = circuit.n_qubits
-    for layer in circuit.layers():
+    virtual = set(virtual)
+    for layer in _noise_layers(circuit, virtual):
         touched = set()
-        for g in layer:
+        for i, g in layer:
             nc.gates.append(g)
+            if i in virtual:
+                continue
             touched.update(g.qubits)
             if not noise.enabled:
                 continue
