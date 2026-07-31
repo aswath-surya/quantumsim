@@ -26,3 +26,10 @@ qasm_bank/
 .idea/
 .env
 .envrc
+
+
+# Data
+.f64
+.cpp
+.hpp
+.log
