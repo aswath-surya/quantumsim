@@ -33,3 +33,4 @@ qasm_bank/
 .cpp
 .hpp
 .log
+.qasm
