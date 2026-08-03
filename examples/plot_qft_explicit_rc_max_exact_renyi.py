@@ -1,17 +1,11 @@
-"""Add maximum exact white-noise and maximum Renyi-2 bounds to the QFT RC/CB plot.
+"""Plot explicit-RC TVD with QCAP, exact white-noise, and Renyi-2 bounds.
 
 This is a lightweight post-processing script. It reuses the .npz produced by
 
     run_qft_explicit_rc_bound_tvd.py
 
-and recomputes only the ideal measured-register distributions for qft14.qasm.
+and recomputes the ideal measured-register distribution for qft14.qasm.
 It does NOT rerun cycle benchmarking or the expensive explicit-RC trajectories.
-
-Here "maximum" means that the QCAP error parameter is replaced by the upper
-2.96-sigma edge of the CB/readout fit uncertainty already used in the original
-figure:
-
-    eps_max = clip(eps_qcap + 2.96 * sigma_qcap, 0, 1).
 
 Under the global white-noise model
 
@@ -30,11 +24,11 @@ and the Renyi-2 upper bound is
 
 where D = 2^(number of measured qubits).
 
-The script plots the maximum versions B_exact(eps_max) and
-B_Renyi(eps_max), together with the original TVD scatter and QCAP curve.
+The script plots B_exact(eps_qcap) and B_Renyi(eps_qcap), together with
+the original TVD scatter, QCAP curve, and QCAP uncertainty band.
 
 Run:
-    python examples/plot_qft_explicit_rc_max_exact_renyi.py
+    python examples/plot_qft_explicit_rc_exact_renyi.py
 """
 
 from __future__ import annotations
@@ -52,7 +46,6 @@ from qiskit.quantum_info import Statevector
 import _bootstrap  # noqa: F401
 from proxysim.backends import StatevectorBackend
 from proxysim.circuit import circuit_from_qasm
-from proxysim.mqtbank import repeat
 
 
 # =============================================================================
@@ -73,12 +66,12 @@ INPUT_DATA = (
 
 OUT = (
     _bootstrap.RESULTS_DIR
-    + "/qft_explicit_rc_bound_tvd_max_exact_renyi.png"
+    + "/qft_explicit_rc_bound_tvd_exact_renyi.png"
 )
 
 OUT_DATA = (
     _bootstrap.RESULTS_DIR
-    + "/qft_explicit_rc_bound_tvd_max_exact_renyi_data.npz"
+    + "/qft_explicit_rc_bound_tvd_exact_renyi_data.npz"
 )
 
 # Match the uncertainty multiplier used by the original plotting script.
@@ -260,19 +253,20 @@ def main():
             dtype=float,
         )
 
-        measured_qubits_saved = tuple(
-            int(qubit)
-            for qubit in np.asarray(
-                source["measured_qubits"],
-                dtype=int,
+        # Older archives produced by run_qft_explicit_rc_bound_tvd.py did
+        # not save measured_qubits. Treat the QASM file as the source of
+        # truth in that case and only perform the consistency check when the
+        # field is present.
+        if "measured_qubits" in source.files:
+            measured_qubits_saved = tuple(
+                int(qubit)
+                for qubit in np.asarray(
+                    source["measured_qubits"],
+                    dtype=int,
+                )
             )
-        )
-
-    expected_shape = (
-        len(repetitions),
-        len(repetitions)
-        and all_tvd_points.shape[1],
-    )
+        else:
+            measured_qubits_saved = None
 
     if all_tvd_points.ndim != 2:
         raise ValueError(
@@ -311,103 +305,88 @@ def main():
         )
     )
 
-    if measured_qubits_saved != measured_qubits_qasm:
+    if (
+        measured_qubits_saved is not None
+        and measured_qubits_saved != measured_qubits_qasm
+    ):
         raise RuntimeError(
             "Measured-qubit mismatch between the saved result and qft14.qasm: "
             f"saved={measured_qubits_saved}, qasm={measured_qubits_qasm}."
         )
 
     n_qubits = base_circ.n_qubits
+
     measured_dimension = 2 ** len(
         measured_qubits_qasm
     )
 
-    uniform_tvds = []
-    collision_probabilities = []
-    renyi_factors_unclipped = []
-    renyi_factors_clipped = []
+    # Compute the ideal QFT output distribution once. The ideal algorithm is
+    # the same at every RC/CB depth; only the accumulated noise changes.
+    ideal_full = exact_probability_vector(
+        base_circ
+    )
 
-    for repetition in repetitions:
-        target = repeat(
-            base_circ,
-            int(repetition),
+    ideal_measured = marginalize_distribution(
+        ideal_full,
+        n_qubits,
+        measured_qubits_qasm,
+    )
+
+    if ideal_measured.size != measured_dimension:
+        raise RuntimeError(
+            "Unexpected measured-register dimension: "
+            f"expected {measured_dimension}, found {ideal_measured.size}."
         )
 
-        ideal_full = exact_probability_vector(
-            target
-        )
+    (
+        uniform_tvd,
+        collision_probability,
+        renyi_unclipped,
+        renyi_clipped,
+    ) = ideal_bound_factors(
+        ideal_measured
+    )
 
-        ideal_measured = marginalize_distribution(
-            ideal_full,
-            n_qubits,
-            measured_qubits_qasm,
-        )
-
-        if ideal_measured.size != measured_dimension:
-            raise RuntimeError(
-                "Unexpected measured-register dimension: "
-                f"expected {measured_dimension}, found {ideal_measured.size}."
-            )
-
-        (
-            uniform_tvd,
-            collision_probability,
-            renyi_unclipped,
-            renyi_clipped,
-        ) = ideal_bound_factors(
-            ideal_measured
-        )
-
-        uniform_tvds.append(
-            uniform_tvd
-        )
-
-        collision_probabilities.append(
-            collision_probability
-        )
-
-        renyi_factors_unclipped.append(
-            renyi_unclipped
-        )
-
-        renyi_factors_clipped.append(
-            renyi_clipped
-        )
-
-    uniform_tvds = np.asarray(
-        uniform_tvds,
+    # Reuse the same ideal-distribution factors at every cycle depth.
+    uniform_tvds = np.full(
+        len(repetitions),
+        uniform_tvd,
         dtype=float,
     )
 
-    collision_probabilities = np.asarray(
-        collision_probabilities,
+    collision_probabilities = np.full(
+        len(repetitions),
+        collision_probability,
         dtype=float,
     )
 
-    renyi_factors_unclipped = np.asarray(
-        renyi_factors_unclipped,
+    renyi_factors_unclipped = np.full(
+        len(repetitions),
+        renyi_unclipped,
         dtype=float,
     )
 
-    renyi_factors_clipped = np.asarray(
-        renyi_factors_clipped,
+    renyi_factors_clipped = np.full(
+        len(repetitions),
+        renyi_clipped,
         dtype=float,
     )
 
-    # Central model curves, retained in the output for comparison.
+    # Central exact white-noise prediction.
     exact_bounds = np.clip(
         qcap_bounds * uniform_tvds,
         0.0,
         1.0,
     )
 
+    # Central Renyi-2 white-noise upper bound.
     renyi_bounds = np.clip(
         qcap_bounds * renyi_factors_clipped,
         0.0,
         1.0,
     )
 
-    # "Maximum" curves: upper edge of the same 2.96-sigma QCAP uncertainty.
+    # Upper and lower edges of the QCAP uncertainty interval.
     qcap_upper = np.clip(
         qcap_bounds
         + UNCERTAINTY_SIGMAS * qcap_stds,
@@ -415,6 +394,14 @@ def main():
         1.0,
     )
 
+    qcap_lower = np.clip(
+        qcap_bounds
+        - UNCERTAINTY_SIGMAS * qcap_stds,
+        0.0,
+        1.0,
+    )
+
+    # Optional upper-edge exact and Renyi curves, saved for later analysis.
     max_exact_bounds = np.clip(
         qcap_upper * uniform_tvds,
         0.0,
@@ -427,21 +414,20 @@ def main():
         1.0,
     )
 
-    # Per-depth ordering required by the construction.
     if np.any(
-        max_exact_bounds
-        > max_renyi_bounds + 1e-10
+        exact_bounds
+        > renyi_bounds + 1e-10
     ):
         raise AssertionError(
-            "Maximum exact bound exceeds maximum Renyi-2 bound."
+            "Exact white-noise prediction exceeds the Renyi-2 bound."
         )
 
     if np.any(
-        max_renyi_bounds
-        > qcap_upper + 1e-10
+        renyi_bounds
+        > qcap_bounds + 1e-10
     ):
         raise AssertionError(
-            "Maximum Renyi-2 bound exceeds the upper QCAP curve."
+            "Renyi-2 bound exceeds the QCAP bound."
         )
 
     np.savez_compressed(
@@ -450,6 +436,7 @@ def main():
         cycle_depths=cycle_depths,
         qcap_bound=qcap_bounds,
         qcap_bound_std=qcap_stds,
+        qcap_lower=qcap_lower,
         qcap_upper=qcap_upper,
         uncertainty_sigmas=UNCERTAINTY_SIGMAS,
         tvd_points=all_tvd_points,
@@ -471,11 +458,11 @@ def main():
         f"{'reps':>6}"
         f"{'CX cycles':>12}"
         f"{'QCAP':>10}"
-        f"{'QCAP max':>12}"
+        f"{'QCAP std':>12}"
         f"{'DTV(p,u)':>12}"
-        f"{'S2 clip':>11}"
-        f"{'max exact':>12}"
-        f"{'max R2':>11}"
+        f"{'R2 factor':>12}"
+        f"{'exact':>12}"
+        f"{'R2 bound':>12}"
     )
 
     for index, repetition in enumerate(
@@ -485,12 +472,32 @@ def main():
             f"{repetition:>6d}"
             f"{cycle_depths[index]:>12d}"
             f"{qcap_bounds[index]:>10.5f}"
-            f"{qcap_upper[index]:>12.5f}"
+            f"{qcap_stds[index]:>12.5f}"
             f"{uniform_tvds[index]:>12.5f}"
-            f"{renyi_factors_clipped[index]:>11.5f}"
-            f"{max_exact_bounds[index]:>12.5f}"
-            f"{max_renyi_bounds[index]:>11.5f}"
+            f"{renyi_factors_clipped[index]:>12.5f}"
+            f"{exact_bounds[index]:>12.5f}"
+            f"{renyi_bounds[index]:>12.5f}"
         )
+
+    print(
+        "\nIdeal-distribution factors:"
+    )
+
+    print(
+        f"  D_TV(p, u)                = {uniform_tvd:.12f}"
+    )
+
+    print(
+        f"  collision probability     = {collision_probability:.12f}"
+    )
+
+    print(
+        f"  Renyi-2 factor unclipped  = {renyi_unclipped:.12f}"
+    )
+
+    print(
+        f"  Renyi-2 factor clipped    = {renyi_clipped:.12f}"
+    )
 
     fig, ax = plt.subplots(
         figsize=(9.4, 6.0)
@@ -527,13 +534,6 @@ def main():
         label="QCAP bound from CX-cycle CB",
     )
 
-    qcap_lower = np.clip(
-        qcap_bounds
-        - UNCERTAINTY_SIGMAS * qcap_stds,
-        0.0,
-        1.0,
-    )
-
     ax.fill_between(
         cycle_depths,
         qcap_lower,
@@ -549,30 +549,24 @@ def main():
 
     ax.plot(
         cycle_depths,
-        max_exact_bounds,
+        exact_bounds,
         "--",
         color="#009E73",
         lw=2.2,
         marker="s",
         ms=5.0,
-        label=(
-            "maximum exact white-noise bound "
-            f"(QCAP + {UNCERTAINTY_SIGMAS:g}$\\sigma$)"
-        ),
+        label="exact white-noise prediction",
     )
 
     ax.plot(
         cycle_depths,
-        max_renyi_bounds,
+        renyi_bounds,
         "-.",
         color="#CC79A7",
         lw=2.2,
         marker="^",
         ms=5.2,
-        label=(
-            "maximum Renyi-2 bound "
-            f"(QCAP + {UNCERTAINTY_SIGMAS:g}$\\sigma$)"
-        ),
+        label="Renyi-2 white-noise bound",
     )
 
     ax.axhline(
@@ -591,7 +585,7 @@ def main():
     )
 
     ax.set_title(
-        "QFT-14: explicit-RC TVD, QCAP, and maximum ideal-distribution bounds\n"
+        "QFT-14: explicit-RC TVD, QCAP, exact, and Renyi-2 bounds\n"
         "14-qubit circuit; TVD evaluated on the 14 measured qubits"
     )
 

@@ -319,7 +319,7 @@ def tvd_points(groups, res: Results, noise: NoiseModel):
     Both arms are compared against the *same* ideal group, so any residual difference
     between them is a difference of channels and not of reference. Readout is applied to
     the noisy arms only -- see the module docstring.
-    """
+
     A group whose ``probs`` estimator was demoted to ``topk`` (too wide for a 2^n
     accumulator, `c3pq_stage.estimator_for`) yields a *lower bound* rather than the TVD;
     those points are collected separately under the ``bound`` flag -- see `tvd_from_topk`.

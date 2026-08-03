@@ -13,12 +13,19 @@ venv/
 venv_quantum/
 env/
 
-# Generated outputs (regenerate with the example scripts)
-results/*.txt
-results/*.png
-
-# Generated QASM bank (regenerate with examples/build_qasm_bank.py) -- multi-GB
+# Generated outputs & Data
+results/
+staging/
+staging_scaling/
 qasm_bank/
+qasm_bank_bounding/
+qasm_bank_scaling/
+tmp_bank/
+tmp_results/
+tmp_staging/
+*.png
+*.npz
+*.log
 
 # OS / editor
 .DS_Store
@@ -26,11 +33,3 @@ qasm_bank/
 .idea/
 .env
 .envrc
-
-
-# Data
-.f64
-.cpp
-.hpp
-.log
-.qasm
