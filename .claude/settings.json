@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p out)",
+      "Bash(mpirun -n 1 ./b0000_n02_topk.x 2 out)",
+      "Bash(.venv/bin/python examples/c3pq_analyze.py)",
+      "Bash(.venv/bin/python -c ' *)",
+      "Bash(.venv/bin/python -)",
+      "Read(//Users/nparr1/**)",
+      "Read(//opt/homebrew/bin/**)",
+      "Bash(conda env *)",
+      "Bash(.venv/bin/python -c \"import stim, qiskit, scipy, matplotlib; print\\('ok', scipy.__version__\\)\")",
+      "Bash(time ../.venv/bin/python -c ' *)"
+    ]
+  }
+}

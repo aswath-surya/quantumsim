@@ -1,0 +1,16 @@
+# Core runtime dependencies (mirrors pyproject [project].dependencies).
+# Prefer:  pip install -e .
+numpy
+scipy
+quimb>=1.10
+qiskit>=1.2
+stim>=1.13
+matplotlib
+networkx
+pylatexenc
+pillow
+
+# Optional, for faster/stabler quimb contraction paths:
+# kahypar
+# optuna
+# cotengra

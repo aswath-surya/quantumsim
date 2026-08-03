@@ -26,6 +26,7 @@ tmp_staging/
 *.png
 *.npz
 *.log
+*.f64
 
 # OS / editor
 .DS_Store
