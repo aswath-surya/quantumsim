@@ -140,7 +140,7 @@ def check_environment():
         import xacc
         print("xacc: IMPORTABLE")
         # We can't easily get version without calling it, but let's try init
-        xacc.init()
+        xacc.Initialize()
         accels = xacc.getAccelerators()
         print(f"Available accelerators: {accels}")
         if "tnqvm" in accels:
