@@ -69,7 +69,7 @@ circuits = 1                                                   # calibration pro
          + modes x cycles x cb_depths x cb_decays x (1 + K)    # CB decays
 ```
 
-At n=2 (`modes=2, depths=7, cycles=1, cb_depths=6`):
+At n=2 (`modes=2, cycles=1, cb_depths=6`), with `--depths` the seven defaults unless noted:
 
 | `--trajectories` | `--instances` | `--cb-decays` | TVD | CB | total | vs. default |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -77,9 +77,17 @@ At n=2 (`modes=2, depths=7, cycles=1, cb_depths=6`):
 | 50 | 5 | 4 | 7,070 | 2,448 | **9,519** | 19× |
 | 150 | 5 | 4 | 21,070 | 7,248 | **28,319** | 57× |
 | 150 | 5 | 30 | 21,070 | 54,360 | **75,431** | 153× |
+| 50 | 5 | 4 | 3,030 | 2,448 | **5,479** | 11× — `--depths 1 2 4` |
+| 150 | 5 | 4 | 9,030 | 7,248 | **16,279** | 33× — `--depths 1 2 4` |
 
 Scale from the elapsed time your last run printed — at n=2 the cost is XACC compile plus
 sampling, roughly linear in circuit count.
+
+`--depths` is the cheapest way to cut the bank, and the last two rows are the recommended
+first real run: three depths is enough to see whether the measured TVD tracks the bound's
+slope, and `--depths 1 2 4 --trajectories 50 --instances 5` gets there for 11× the smoke
+config. Note it only trims the TVD arms — the CB decays follow `--cb-depths`, which is
+separate and should be left alone.
 
 **Leave `--cb-decays` alone.** It is the most expensive knob and the least useful one here:
 at `theta_zz == 0` the bound takes its e_F from the Clifford (stim) path, so the CB arms
@@ -108,6 +116,21 @@ Keep `--shots` at whatever the directory was first run with. A results directory
 one shot count and stage C derives every tolerance from it, so mixing two would judge half
 the files against the wrong noise floor; `run_exatn_bank.py` refuses the run rather than
 letting that happen. To change shots, use a fresh `--output-dir`.
+
+**Narrowing does not work in place.** Growing is additive; *restricting* is not. The
+builder never deletes, so rebuilding into an existing directory with `--depths 1 2 4` when
+it was first built at the defaults leaves the d008–d064 circuits sitting there — and stage
+B globs the bank directory, so it will simulate them anyway. Any run that reduces
+`--widths`, `--depths` or `--cb-depths` needs a fresh `--out`:
+
+```bash
+python examples/build_bounding_bank.py --out qasm_bank_bounding_d4 \
+    --depths 1 2 4 --trajectories 50 --instances 5
+```
+
+Point stage B at the new bank but keep the **same** `--out` results directory: stems encode
+depth, instance, arm and trajectory, so the overlapping files are identical and `--resume`
+reuses them rather than recomputing.
 
 ### Stage B: Run the simulations
 One `.f64` per QASM file, named after the file's stem, written flat into the output
@@ -147,27 +170,50 @@ Circuits are independent and each writes its own `.f64`, so the run shards clean
 contiguous block, so the expensive CB sequences and the cheap short-depth TVD circuits
 spread evenly across shards.
 
+Time one shard before committing the node to it — the printed ETA already divides by the
+shard count, and this also flushes out any contention between concurrent XACC inits:
+
+```bash
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+python examples/run_exatn_bank.py --bank qasm_bank_bounding_d4 --out results_exatn \
+    --shots 100000 --resume --shard 0/16 --limit 20
+```
+
+Then the full run:
+
 ```bash
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1     # each shard is single-threaded; see below
 N=16
 for i in $(seq 0 $((N-1))); do
-  python examples/run_exatn_bank.py --bank qasm_bank_bounding --out results_exatn \
+  python examples/run_exatn_bank.py --bank qasm_bank_bounding_d4 --out results_exatn \
       --shots 100000 --resume --shard $i/$N > shard$i.log 2>&1 &
 done
 wait
 
-python examples/run_exatn_bank.py --bank qasm_bank_bounding --out results_exatn \
+python examples/run_exatn_bank.py --bank qasm_bank_bounding_d4 --out results_exatn \
     --merge-shards
 ```
 
 At n=2 nearly all the per-circuit cost is single-threaded Python — qiskit parse, lowering,
 staq compile — not tensor contraction, so this scales close to linearly and the two
 `*_NUM_THREADS` exports matter: without them each shard's MKL will try to grab every core
-and the shards will fight.
+and the shards will fight. If the N-way run is not close to N× a single shard's rate, the
+XACC/ExaTN inits are contending; halve N.
 
 Each shard keeps its own `manifest.shardIofN.json`, because concurrent processes appending
 to one file would lose entries. `--merge-shards` folds them into the `manifest.json` that
 stage C reads, and refuses to merge shards that disagree on shots, visitor or lowering.
+
+Two consequences of those separate manifests, both handled but worth knowing:
+
+- **`--resume` trusts the disk, not just the manifest.** A fresh shard manifest starts
+  empty, so work finished by an earlier run — or by a differently-sharded one — is visible
+  only as the `.f64` itself. `--resume` skips a circuit when *either* record says it is
+  done, which is what makes it safe to change N between runs.
+- **The settings guard reads `manifest.json` when the shard's own manifest is absent.**
+  Otherwise the first sharded run into a populated directory would be exactly the one that
+  slipped a changed `--shots` past the check. Run `--merge-shards` after each sharded pass
+  so that record stays current.
 
 Use plain background processes inside your existing `salloc`, not `srun -n $N` — ExaTN may
 initialise MPI, and launching the shards as MPI ranks makes them one communicating job
@@ -236,6 +282,37 @@ python examples/run_exatn_bank.py --bank qasm_bank_bounding --out results_exatn 
 python examples/exatn_analyze.py --bank qasm_bank_bounding --results results_exatn
 ```
 
+### First real run
+
+The smoke config's K=4 puts the TVDs in a quantised comb; this is the smallest config that
+does not. 5,479 circuits, 11× the smoke bank, sharded 16 ways on one node:
+
+```bash
+# 1. Build into a FRESH bank dir -- restricting --depths does not remove old circuits
+python examples/build_bounding_bank.py --out qasm_bank_bounding_d4 \
+    --depths 1 2 4 --trajectories 50 --instances 5 --dry-run     # expect 5,479
+python examples/build_bounding_bank.py --out qasm_bank_bounding_d4 \
+    --depths 1 2 4 --trajectories 50 --instances 5
+
+# 2. Simulate, sharded. Same --shots and same --out as before: --resume reuses the
+#    overlapping .f64 from the smoke run instead of recomputing them.
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+N=16
+for i in $(seq 0 $((N-1))); do
+  python examples/run_exatn_bank.py --bank qasm_bank_bounding_d4 --out results_exatn \
+      --shots 100000 --resume --shard $i/$N > shard$i.log 2>&1 &
+done
+wait
+python examples/run_exatn_bank.py --bank qasm_bank_bounding_d4 --out results_exatn \
+    --merge-shards
+
+# 3. Analyze
+python examples/exatn_analyze.py --bank qasm_bank_bounding_d4 --results results_exatn
+```
+
+Once the shape looks right, re-run with `--trajectories 150` (16,279 circuits, 3× this) for
+publication-grade trajectory noise. Everything already computed is reused.
+
 ## 4. Troubleshooting
 
 | Symptom | Cause and fix |
@@ -256,7 +333,9 @@ python examples/exatn_analyze.py --bank qasm_bank_bounding --results results_exa
 | `manifest.json already describes a run with different settings` | You changed `--shots`, `--no-lower` or `--visitor` while resuming into a directory that already holds results from the old settings. Keep the original values, or use a fresh `--output-dir`. |
 | `shardXofN.json disagrees with shard0ofN.json` | The shards were not all launched with the same flags. Fix the command and re-run the odd one out; `--resume` makes that cheap. |
 | `no bank manifest` / `no shot count` after a sharded run | You forgot `--merge-shards`. Stage C reads `manifest.json`, which only exists once the shard manifests are folded together. |
-| Sharded run no faster than serial | `OMP_NUM_THREADS`/`MKL_NUM_THREADS` are unset, so every shard is trying to use every core. Export both as 1. |
+| Sharded run no faster than serial | `OMP_NUM_THREADS`/`MKL_NUM_THREADS` are unset, so every shard is trying to use every core. Export both as 1. If they are set, the concurrent XACC/ExaTN inits are contending — halve `N`. |
+| Depths you thought you had removed still being simulated | The builder never deletes. Restricting `--depths`/`--widths`/`--cb-depths` in place leaves the old `.qasm` files, and stage B globs the directory. Rebuild into a fresh `--out`. |
+| A resumed run recomputing files that already exist | Should not happen — `--resume` skips on the `.f64` as well as the manifest. If it does, check you passed `--resume` at all, and that `--overwrite` is not also set (it wins). |
 
 ## 5. Technical Details
 

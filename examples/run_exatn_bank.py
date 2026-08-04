@@ -336,15 +336,18 @@ def main():
 
     manifest_path = out_dir / args.manifest
     manifest = load_manifest(manifest_path)
-    if manifest is None:
-        manifest = RunManifest(
-            results_dir=str(out_dir),
-            qasm_bank=str(bank_path),
-            shots=args.shots,
-            visitor=args.visitor,
-            lowered=not args.no_lower,
-        )
-    else:
+
+    # The settings check has to run against whatever record of this directory exists, not
+    # only against our own manifest. A sharded run writes manifest.shard<i>of<n>.json, which
+    # on a first pass does not exist yet -- so without this fallback the very runs most
+    # likely to be pointed at a populated directory would be the ones that skip the guard.
+    reference = manifest
+    reference_path = manifest_path
+    if reference is None and shard:
+        reference_path = out_dir / "manifest.json"
+        reference = load_manifest(reference_path)
+
+    if reference is not None:
         # Resuming into a directory whose .f64 files were produced under different
         # settings silently mixes two populations: the manifest can only record one shot
         # count, and exatn_analyze.py derives every statistical tolerance from it, so half
@@ -352,27 +355,41 @@ def main():
         # deterministic in their seeds, so growing a bank and resuming is the intended
         # workflow -- changing how the circuits are *run* mid-directory is not.
         conflicts = []
-        if manifest.shots != args.shots:
-            conflicts.append(f"shots {manifest.shots} -> {args.shots}")
-        if manifest.lowered != (not args.no_lower):
-            conflicts.append(f"lowered {manifest.lowered} -> {not args.no_lower}")
-        if manifest.visitor != args.visitor:
-            conflicts.append(f"visitor '{manifest.visitor}' -> '{args.visitor}'")
+        if reference.shots != args.shots:
+            conflicts.append(f"shots {reference.shots} -> {args.shots}")
+        if reference.lowered != (not args.no_lower):
+            conflicts.append(f"lowered {reference.lowered} -> {not args.no_lower}")
+        if reference.visitor != args.visitor:
+            conflicts.append(f"visitor '{reference.visitor}' -> '{args.visitor}'")
         if conflicts:
             logger.error(
-                f"{manifest_path} already describes a run with different settings "
+                f"{reference_path} already describes a run with different settings "
                 f"({'; '.join(conflicts)}). Existing .f64 files in {out_dir} were produced "
                 f"the old way. Either keep the original settings and --resume, or write to "
                 f"a fresh --output-dir."
             )
             sys.exit(1)
-        if manifest.qasm_bank != str(bank_path):
+        if reference.qasm_bank != str(bank_path):
             logger.warning(
-                f"{manifest_path} records bank '{manifest.qasm_bank}' but this run uses "
+                f"{reference_path} records bank '{reference.qasm_bank}' but this run uses "
                 f"'{bank_path}'; updating the record. Stems from two different banks in "
                 f"one directory will not collide, but the provenance will be ambiguous."
             )
-            manifest.qasm_bank = str(bank_path)
+            if manifest is not None:
+                manifest.qasm_bank = str(bank_path)
+
+    if manifest is None:
+        # A fresh shard manifest deliberately starts with an empty `completed` list even
+        # when a merged manifest.json exists: copying its entries in would make
+        # merge_shards report every one of them as completed by more than one shard. The
+        # result_path.exists() test in the loop below is what makes --resume see that work.
+        manifest = RunManifest(
+            results_dir=str(out_dir),
+            qasm_bank=str(bank_path),
+            shots=args.shots,
+            visitor=args.visitor,
+            lowered=not args.no_lower,
+        )
 
     # Discover files
     qasm_files = sorted(list(bank_path.rglob(args.pattern)))
