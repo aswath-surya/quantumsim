@@ -110,9 +110,9 @@ N = 2
 # circuit never applies.
 CYCLES = {k: v for k, v in (("A", even_pairs(N)), ("B", odd_pairs(N))) if v}
 CYCLE_LIST = list(CYCLES.values())
-DEPTHS = [1, 2, 4, 8, 16, 32, 64]
+DEPTHS = [1, 2, 4, 8, 16, 32, 64, 128]  # depth series to test, for both ansaetze
 N_INSTANCES = 80                # random circuit instances per depth (TVD scatter)
-TVD_SHOTS = 50000              # sets the TVD noise floor (~0.003 here); sampling is
+TVD_SHOTS = 2000              # sets the TVD noise floor (~0.003 here); sampling is
                                  # setup-bound, so more shots are essentially free
 THETA_ZZ = 0.00                  # coherent residual-ZZ angle, rad. 0.0 -> Pauli only.
 #ONEQ_SET = "clifford"            # "clifford" -> stabilizer ansatz, exact stim path.
@@ -120,7 +120,7 @@ ONEQ_SET = "t"                                # "t"        -> append T to the 1q
                                  #               so every point goes through N_TRAJ
                                  #               trajectories, but the TVD bands
                                  #               dissolve. See the module docstring.
-N_TRAJ = 150                    # trajectories per point on any series that cannot go
+N_TRAJ = 1000                    # trajectories per point on any series that cannot go
                                  # through stim -- the un-compiled series always, and
                                  # BOTH series once ONEQ_SET = "t". Sets a noise floor
                                  # on those points: measured per-instance std is 0.011

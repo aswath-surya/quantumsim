@@ -245,14 +245,36 @@ def qcap_bound(cycle_counts: Dict[str, int], cycle_efs: Dict[str, Tuple[float, f
     notebook (Var(Y^n) ~ n Y^(n-1) Var(Y), then the product rule).
     """
     p = ro_fid
-    pvar = ro_std ** 2
+    pvar = ro_std**2
+
     for cyc, n in cycle_counts.items():
-        e_F, std = cycle_efs[cyc]
-        y = (1 - e_F) ** n
-        yvar = n * (1 - e_F) ** (n - 1) * std ** 2
-        pvar = pvar * (yvar + y ** 2) + yvar * p ** 2
-        p *= y
-    return {"error": 1 - p, "std": math.sqrt(max(pvar, 0.0)), "fidelity": p}
+            e_F, std = cycle_efs[cyc]
+
+            # y = (1 - e_F)^n
+            y = (1.0 - e_F) ** n
+
+            # First-order uncertainty propagation:
+            # Var(y) ≈ (dy/de_F)^2 Var(e_F)
+            dy_de = -n * (1.0 - e_F) ** (n - 1)
+            yvar = dy_de**2 * std**2
+
+            # For independent random variables p and y:
+            # Var(p y) = y^2 Var(p) + p^2 Var(y) + Var(p) Var(y)
+            p_new = p * y
+            pvar_new = (
+                y**2 * pvar
+                + p**2 * yvar
+                + pvar * yvar
+            )
+
+            p = p_new
+            pvar = pvar_new
+
+    return {
+        "error": 1.0 - p,
+        "std": math.sqrt(max(pvar, 0.0)),
+        "fidelity": p,
+    }
 
 
 # ---------------------------------------------------------------------------

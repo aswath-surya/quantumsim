@@ -23,10 +23,13 @@ from examples.c3pq_analyze import Results
 
 class AutomationBank:
     """Helper to create the QASM bank and manifest required by C-3PQ."""
-    def __init__(self, root: str):
+    def __init__(self, root: str, force: bool = False):
         self.root = root
+        self.force = force
         self.groups = []
         self.files_count = 0
+        self.written_count = 0
+        self.skipped_count = 0
 
     def group(self, name: str, subdir: str, **fields) -> dict:
         g = dict(name=stage_name(name), dir=os.path.join(subdir, name),
@@ -42,8 +45,12 @@ class AutomationBank:
         self.files_count += 1
         path = os.path.join(self.root, g["dir"], f"{stem}.qasm")
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path) and not self.force:
+            self.skipped_count += 1
+            return
         with open(path, "w") as fh:
             fh.write(text)
+        self.written_count += 1
 
     def close(self, g: dict) -> None:
         if not g["files"]:
@@ -177,7 +184,9 @@ def automate_c3pq_pipeline(
     bank_dir: str = "tmp_bank",
     staging_dir: str = "tmp_staging",
     results_dir: str = "tmp_results",
-    seed: int = 42
+    seed: int = 42,
+    clean: bool = True,
+    force_bank: bool = False,
 ):
     """
     Drives a circuit through the full C3PQ pipeline across multiple depths.
@@ -187,7 +196,7 @@ def automate_c3pq_pipeline(
             two-argument form is what makes ``n_instances`` meaningful.
         depths: List of depths to simulate.
         noise_model: The noise model to apply.
-        n_trajectories: Number of noise trajectories per noisy/RC group.
+        n_trajectories: Number of noise trajectories in each RC group.
         n_instances: Random circuit instances per depth. Each becomes its own
             TVD point, so the output is a distribution per depth rather than a
             single number. Cost is linear in instances x trajectories.
@@ -203,17 +212,21 @@ def automate_c3pq_pipeline(
         results_dir: Directory for simulation outputs.
         seed: Random seed for reproducibility.
     """
-    # 0. Cleanup
-    for d in [bank_dir, staging_dir, results_dir]:
-        if os.path.exists(d):
-            shutil.rmtree(d)
+    # 0. Cleanup. Keep this explicit so stale staging/results cannot be mixed into
+    # a new manifest. Set clean=False only when intentionally resuming the same run.
+    if clean:
+        for d in (bank_dir, staging_dir, results_dir):
+            if os.path.exists(d):
+                shutil.rmtree(d)
+    for d in (bank_dir, staging_dir, results_dir):
+        os.makedirs(d, exist_ok=True)
 
     # 1. Create Bank
-    print("Creating QASM bank...")
+    print("Creating compact RC-only QASM bank...")
     make_circuit = instance_factory(circuit_fn)
-    bank = AutomationBank(bank_dir)
+    bank = AutomationBank(bank_dir, force=force_bank)
 
-    # Every (depth, instance) is its own group triple -- ideal / noisy / rc -- because
+    # Every (depth, instance) is its own group pair -- ideal / rc -- because
     # a group is what C-3PQ averages over, and averaging two instances together would
     # collapse the very spread the scatter is there to show.
     for depth in depths:
@@ -231,34 +244,36 @@ def automate_c3pq_pipeline(
                      header_lines=[f"Depth {depth} instance {inst} - Ideal"])
             bank.close(g_ideal)
 
-            # Noisy arm. The trajectory seeds have to move with the instance, or every
-            # instance draws the same error pattern and the scatter is fake.
-            g_noisy = bank.group(f"{tag}_noisy", f"n{n_qubits:02d}/tvd",
-                                 arm="noisy", **common)
-            for k in range(n_trajectories):
-                rng = random.Random(seed + 10000 * inst + k)
-                traj = sample_trajectory(circ, noise_model, rng)
-                bank.add(g_noisy, k, traj,
-                         header_lines=[f"Depth {depth} instance {inst} - Noisy Traj {k}"])
-            bank.close(g_noisy)
-
-            # RC arm
+            # RC arm only. The QCAP bound applies to this arm, and removing the unused
+            # raw-noisy arm nearly halves code generation and compilation.
             g_rc = bank.group(f"{tag}_rc", f"n{n_qubits:02d}/tvd", arm="rc", **common)
             for k in range(n_trajectories):
-                rng = random.Random(seed + 10000 * inst + 100 + k)
+                # Include depth in the seed so different depths do not reuse identical
+                # twirls/error draws.
+                rng = random.Random(seed + 1_000_000 * depth + 10_000 * inst + k)
                 twirled, virt = rc.pauli_twirl(circ, rng, mark_virtual=True)
                 traj = sample_trajectory(twirled, noise_model, rng, virtual=virt)
-                bank.add(g_rc, k, traj,
-                         header_lines=[f"Depth {depth} instance {inst} - RC Traj {k}"])
+                bank.add(
+                    g_rc,
+                    k,
+                    traj,
+                    header_lines=[
+                        f"Depth {depth} instance {inst} - RC trajectory {k}"
+                    ],
+                )
             bank.close(g_rc)
 
+    expected = len(depths) * n_instances * (1 + n_trajectories)
     print(f"  {bank.files_count} circuits "
           f"({len(depths)} depths x {n_instances} instances x "
-          f"(1 + 2 x {n_trajectories}) arms)")
+          f"(1 ideal + {n_trajectories} RC trajectories))")
+    if bank.files_count != expected:
+        raise RuntimeError(f"Expected {expected} bank entries, got {bank.files_count}")
+    print(f"  written={bank.written_count}, reused={bank.skipped_count}")
     bank.write_manifest(
         os.path.join(bank_dir, "manifest.json"),
         {"depths": depths, "n_trajectories": n_trajectories,
-         "n_instances": n_instances, "seed": seed},
+         "n_instances": n_instances, "seed": seed, "arms": ["ideal", "rc"]},
         noise_model
     )
 
@@ -299,24 +314,17 @@ def automate_c3pq_pipeline(
     tvd_results = {}
     for depth in depths:
         n = make_circuit(depth, 0).n_qubits
-        noisy_points, rc_points = [], []
+        rc_points = []
         for inst in range(n_instances):
             tag = f"tvd_n{n:02d}_d{depth:03d}_i{inst:03d}"
             try:
                 # Raw probability vectors, straight from the C-3PQ output.
                 ideal_vec = res.probs(f"{tag}_ideal", n)
-                noisy_vec_raw = res.probs(f"{tag}_noisy", n)
                 rc_vec_raw = res.probs(f"{tag}_rc", n)
 
-                # Readout is applied analytically to the noisy arms only, as in
-                # c3pq_analyze.py -- the C-3PQ run is of the pre-measurement state.
-                noisy_vec = apply_readout_to_distribution(noisy_vec_raw, noise_model, n)
+                # Readout is applied analytically to the RC distribution; the C-3PQ
+                # output is the pre-measurement probability vector.
                 rc_vec = apply_readout_to_distribution(rc_vec_raw, noise_model, n)
-
-                # metrics.total_variation_distance takes {bitstring: p} dicts; these are
-                # dense 2^n vectors, so take the distance directly the way
-                # c3pq_analyze.tvd_points does.
-                noisy_points.append(0.5 * float(np.abs(ideal_vec - noisy_vec).sum()))
                 rc_points.append(0.5 * float(np.abs(ideal_vec - rc_vec).sum()))
             except Exception as e:
                 print(f"Error analyzing depth {depth} instance {inst}: {e}")
@@ -327,9 +335,7 @@ def automate_c3pq_pipeline(
 
         b = bounds.get(depth)
         entry = {
-            "tvd_noisy_points": noisy_points,
             "tvd_rc_points": rc_points,
-            "tvd_noisy": float(np.mean(noisy_points)),
             "tvd_rc": float(np.mean(rc_points)),
             **{k: v for k, v in (b or {}).items() if k != "counts"},
         }
@@ -341,8 +347,7 @@ def automate_c3pq_pipeline(
             extra = (f", bound={b['bound']:.6f}"
                      + (f"   <-- {over}/{len(rc_points)} RC points over the bound"
                         if over else ""))
-        print(f"Depth {depth}: mean TVD_Noisy={entry['tvd_noisy']:.6f}, "
-              f"mean TVD_RC={entry['tvd_rc']:.6f} "
+        print(f"Depth {depth}: mean TVD_RC={entry['tvd_rc']:.6f} "
               f"(max {max(rc_points):.6f} over {len(rc_points)} instances){extra}")
 
     return tvd_results
@@ -382,15 +387,14 @@ def plot_tvd_results(tvd_results: Dict[int, Dict[str, float]],
             pts = tvd_results[d].get(points_key, [tvd_results[d][mean_key]])
             plt.plot([d] * len(pts), pts, marker, color=color, ms=5, alpha=0.55,
                      mew=0, label=label if d == depths[0] else None)
-        plt.plot(depths, [tvd_results[d][mean_key] for d in depths], "-",
-                 color=color, lw=1.2, alpha=0.9)
+
 
     # A single error-bearing trajectory out of K shifts the TVD by ~1/K, so that is the
     # quantum of this estimator. Where the bound sits near or below the line, a marker
     # above the bound is Monte-Carlo granularity, not a violation.
-    if n_trajectories:
-        plt.axhline(1.0 / n_trajectories, color="0.4", ls="--", lw=1, zorder=1,
-                    label=f"one trajectory in {n_trajectories} (TVD granularity)")
+    #if n_trajectories:
+    #    plt.axhline(1.0 / n_trajectories, color="0.4", ls="--", lw=1, zorder=1,
+    #                label=f"one trajectory in {n_trajectories} (TVD granularity)")
 
     plt.xlabel("circuit depth")
     plt.ylabel("probability of an error (TVD)")
@@ -424,8 +428,10 @@ if __name__ == "__main__":
     #
     # examples/run_bounding.py runs 80 instances x 150 trajectories, which is out of
     # reach here only because every trajectory is a separately compiled C++ binary.
-    N_INSTANCES = 16#30
-    N_TRAJECTORIES = 16#24
+    # C-3PQ compiles every trajectory as a circuit implementation, so use modest K.
+    # This configuration creates 6 * 12 * (1 + 24) = 1,800 QASM circuits.
+    N_INSTANCES = 6
+    N_TRAJECTORIES = 400
 
     # Expect the TVD cloud to reach down to exactly 0 at some depths. Whenever an
     # instance's ideal output is the uniform distribution, no Pauli channel can move it
@@ -443,10 +449,17 @@ if __name__ == "__main__":
 
     noise = NoiseModel(enabled=True, p1=1e-3, p2=1e-2, p_readout=1e-2, p_idle=1e-3)
 
-    depths_to_test = [1, 2, 4, 8, 16, 32]
-    results = automate_c3pq_pipeline(my_circuit_fn, depths_to_test, noise,
-                                     n_trajectories=N_TRAJECTORIES,
-                                     n_instances=N_INSTANCES, cycles=CYCLES)
+    depths_to_test = [1, 2, 4, 8]#, 16, 32]
+    results = automate_c3pq_pipeline(
+        my_circuit_fn,
+        depths_to_test,
+        noise,
+        n_trajectories=N_TRAJECTORIES,
+        n_instances=N_INSTANCES,
+        cycles=CYCLES,
+        jobs=max(1, (os.cpu_count() or 2) - 2),
+        clean=True,
+    )
     print("\nFinal Results:", results)
     plot_tvd_results(results, n_trajectories=N_TRAJECTORIES,
                      title=f"TVD vs depth (n=2, CZ brickwork, "
