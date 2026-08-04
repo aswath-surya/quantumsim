@@ -18,6 +18,7 @@ results/
 staging/
 staging_scaling/
 qasm_bank/
+qasm_bank_exatn/
 qasm_bank_bounding/
 qasm_bank_scaling/
 qasm_bank_test/
@@ -26,6 +27,7 @@ qasm_bank_test_full/
 tmp_bank/
 tmp_results/
 tmp_staging/
+results_exatn/
 *.png
 *.npz
 *.log
