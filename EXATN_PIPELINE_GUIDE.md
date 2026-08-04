@@ -27,6 +27,11 @@ Three stages: **Generation**, **Simulation**, and **Analysis**. ExaTN stands in 
 C-3PQ binary as the simulation engine; the bank and the analysis are the same physics
 either way.
 
+Run them in order. Stage A is not optional: the *bank* is the circuits **plus** the
+manifest saying which of them form a group, with what weights and what estimator, and none
+of that is recoverable from the `.qasm` files. Stage C reads the bank and the results
+directory as two separate inputs — `--bank` is stage A's output, `--results` is stage B's.
+
 ### Stage A: Build the bounding bank
 `build_bounding_bank.py` writes the circuits the analysis needs — the `ideal`/`noisy`/`rc`
 TVD arms, the cycle-benchmarking decays, and the calibration probe — plus the
@@ -36,7 +41,30 @@ TVD arms, the cycle-benchmarking decays, and the calibration probe — plus the
 ```bash
 python examples/build_bounding_bank.py --out qasm_bank_bounding
 # --widths / --depths / --cb-depths / --trajectories / --cb-decays to scale it up
+# --dry-run reports the circuit and byte count without writing anything -- use it to size
+# a scaled-up config before committing to it
 ```
+
+**The defaults are a smoke config, not a measurement.** Two of them dominate the figure:
+
+- `--trajectories` (K, default 4). The noisy and rc arms average K sampled Pauli-error
+  realisations, and at these error rates most realisations carry no error at all — so one
+  bad draw out of K shifts the averaged distribution by 1/K of its own distance and the
+  measured TVDs come out **quantised** in a comb at multiples of ~1/K. On the plot that
+  reads as wild outliers at 0.25 and 0.5; it is not scatter, and more shots will not
+  touch it. `run_bounding` uses 150. The analyzer prints a warning below 32.
+- `--instances` (default 2). This is literally the number of markers per depth per arm.
+  Five or more before the spread means anything.
+
+Trajectory noise is ~1/√K and shot noise ~1/√S, so at K=4 / 100k shots the first is ~150×
+the second. K is the cheaper thing to buy: a production-ish n=2 bank is
+
+```bash
+python examples/build_bounding_bank.py --out qasm_bank_bounding \
+    --trajectories 150 --instances 5 --cb-decays 30 --dry-run   # check the count, then drop --dry-run
+```
+
+and `--shots 20000` is then plenty in stage B.
 
 ### Stage B: Run the simulations
 One `.f64` per QASM file, named after the file's stem, written flat into the output
@@ -53,6 +81,21 @@ python examples/run_exatn_bank.py --bank qasm_bank_bounding --out results_exatn 
 Shots matter: every tolerance in stage C is derived from this number, and at the smoke
 config the sampling bias of the TVD is the same order as the TVD itself. 100k is a
 reasonable floor; the analyzer prints the bias next to each point so it stays visible.
+
+Give each bank its own output directory. The run manifest that records `shots`, the
+compiler and the lowering flag is per-directory, and stage C reads `--shots` from it — so
+mixing two banks' results in one directory leaves the second run's manifest describing
+both. Stems will not collide, but the provenance will be wrong.
+
+**Watch the first few circuits.** Let a couple complete before walking away:
+
+- `Could not lower ... check that qiskit is importable` — lowering has fallen back to the
+  raw source, and staq will then reject `sx`/`sxdg`. This warning is printed **once** per
+  run, so it is easy to miss in the scrollback. Fix by installing qiskit into the venv; see
+  *Gate Lowering* below.
+- `XACC compiler '...' failed to parse QASM file ...` — the compile itself failed. The
+  message says whether lowering was applied, which separates a gate-set problem from a
+  compiler-selection one.
 
 **Tip:** To verify your XACC environment before running a full bank, use:
 ```bash
@@ -75,6 +118,12 @@ python examples/exatn_analyze.py --bank qasm_bank_bounding --results results_exa
 It writes `results/exatn_bounding_<n>qubits*.png` and `results/exatn_bounding_data*.npz`,
 and exits nonzero if a check fails (`--no-assert` reports without failing).
 
+By default the figure plots only the randomly-compiled arm, since the QCAP bound is stated
+for the RC'd circuit — the un-compiled series shares the axis without being what the curve
+bounds. `--arms both` draws both, `--arms noisy` only the un-compiled one. This is a
+presentation choice: both arms are always written to the `.npz` (`*_tvd` and
+`*_tvd_nonrc`) and check [4] compares them either way.
+
 **Note on `generate_exatn_bank.py`.** That script writes plain LNN brickwork circuits with
 no arms, no CB decays and no manifest. It is a backend smoke test — useful for confirming
 XACC/TNQVM/ExaTN runs at all and how it scales with width — and there is no analyze stage
@@ -95,6 +144,7 @@ For a rapid end-to-end test, run these commands in sequence:
 ```bash
 # 1. Setup
 source scripts/activate_tnqvm.sh
+python -c "import qiskit"                      # lowering needs it; see Gate Lowering
 python examples/run_exatn_bank.py --check-environment
 
 # 2. Build the bank (defaults: n=2 smoke config, ~490 circuits)
@@ -108,11 +158,29 @@ python examples/run_exatn_bank.py --bank qasm_bank_bounding --out results_exatn 
 python examples/exatn_analyze.py --bank qasm_bank_bounding --results results_exatn
 ```
 
-## 4. Technical Details
+## 4. Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `no bank manifest at qasm_bank_bounding/manifest.json` | Stage A was skipped, or `--bank` was pointed at the results directory. Run `build_bounding_bank.py --out qasm_bank_bounding` first. `--bank` is the circuits, `--results` is the `.f64` files. |
+| `FileNotFoundError: <bank>/manifest.json` from `c3pq_analyze.py` | Same cause, older message. Also what you get from pointing either analyzer at a `generate_exatn_bank.py` brickwork bank, which has no manifest and no groups. |
+| `Invalid xasm source: ... mismatched input '// ...' expecting {'__qpu__', '['}` | The `xasm` compiler was selected. It is XACC's own DSL, always registered, and cannot parse OpenQASM. The backend now probe-compiles candidates instead of trusting the lookup; if you still see this, `--check-environment` will show whether *any* compiler parses OpenQASM in this build. |
+| `Could not lower ... passing the original source to XACC` | qiskit is not importable, so `circuit_from_qasm` cannot read the bank. Circuits containing `sx`/`sxdg`/`cp` will then fail to compile. Printed once per run. |
+| `no shot count: .../manifest.json is missing or has no 'shots'` | Stage B wrote no run manifest (interrupted before the first save), or `--results` is wrong. Pass `--shots N` matching the run, or re-run stage B. |
+| `N groups have no results at all` | Stage B has not covered this bank. Check its summary for failures; `--resume` continues a partial run. |
+| `M groups incomplete` and they are skipped | Some trajectories of a group are missing. Re-run stage B with `--resume`, or accept a reweighted estimate with `exatn_analyze.py --allow-partial`. |
+| `calibration=FAIL` with `both conventions fit` | Not a bit-order failure — the probe cannot discriminate at this width and shot count. Raise `--shots`. |
+| `calibration=FAIL` with the transposed convention winning | A real bit-order problem. Re-run `--check-environment` and, if its `x q[0]` probe disagrees with the default, re-run stage B with `--no-reverse-bits`. |
+| TVD points flagged as `within 2x its sampling bias` | Not an error. The measurement is swamped by shot noise at those depths; raise `--shots` before reading them as physics. |
+| Only a couple of markers per depth | That is `--instances` from stage A (default 2), one marker per instance per arm. Rebuild the bank with more. |
+| TVD points sitting at 0.25 / 0.5 with nothing in between | Trajectory quantisation at small K, not outliers — see *The defaults are a smoke config* under stage A. Rebuild with `--trajectories 150`. More shots will not help. |
+| Green "NOT compiled" points you don't want | `--arms rc` is the default now; `--arms both` restores them. |
+
+## 5. Technical Details
 
 - **Result Format**: Results are stored as raw `float64` binary arrays (`numpy.tofile`).
 - **Bit Order**: The pipeline implements LSB (Least Significant Bit) convention where qubit $i$ corresponds to bit $i$. XACC reports measurement bitstrings with qubit 0 *leftmost*, so the backend reverses them; `--check-environment` runs an `x q[0]` probe that verifies this, and `--no-reverse-bits` overrides it if a build differs.
 - **QASM Compiler**: XACC must parse the bank with `staq` (its OpenQASM 2.0 front end), *not* `xasm`. `xasm` is XACC's own DSL and is always registered, so the backend probe-compiles each candidate rather than trusting the service lookup. A `mismatched input '// ...' expecting {'__qpu__', '['}` error means `xasm` was selected.
-- **Gate Lowering**: The bounding bank writes unlowered proxysim IR, which includes `sx`, `sxdg` and (at `--theta-zz != 0`) `cp` — none of which standard `qelib1.inc` declares, so staq rejects them. The backend therefore rewrites each circuit into the qelib1 subset before compiling (`sx` → `rx(pi/2)`, `s` → `rz(pi/2)`, `cp` → `cu1`, and so on, each exact up to a global phase), via `proxysim.c3pq.lower_for_c3pq`. `--no-lower` hands XACC the file as written. This requires qiskit, which `circuit_from_qasm` uses to read the bank; without it the backend warns once and falls back to the raw text.
+- **Gate Lowering**: The bounding bank writes unlowered proxysim IR, which includes `sx`, `sxdg` and (at `--theta-zz != 0`) `cp` — none of which standard `qelib1.inc` declares, so staq rejects them. The backend therefore rewrites each circuit into the qelib1 subset before compiling (`sx` → `rx(pi/2)`, `s` → `rz(pi/2)`, `cp` → `cu1`, and so on, each exact up to a global phase), via `proxysim.c3pq.lower_for_c3pq`. `--no-lower` hands XACC the file as written. This requires **qiskit**, which `circuit_from_qasm` uses to read the bank — it is a declared dependency (`requirements.txt`) but is easy to miss in a hand-built venv, and without it the backend warns once and falls back to the raw text, after which every circuit containing `sx` fails to compile. Confirm with `python -c "import qiskit"` before a long run.
 - **Shot Noise**: ExaTN samples, where C-3PQ returns exact probabilities. `exatn_analyze.py` therefore replaces `c3pq_analyze.py`'s exact tolerances (1e-9, 1e-12) with statistical ones derived from `--shots` and from each group's effective sample count (`shots x K`, since a group averages K trajectories), and prints each noise floor next to the number it governs. The TVD is biased *upward* by roughly `sum_i sqrt(p_i(1-p_i)/(2 pi S))`; that bias is reported per point and stored in the `.npz` but never subtracted, since the QCAP bound is an upper bound and deflating the measurement would manufacture agreement.
 - **Compatibility**: Output files are 100% compatible with `proxysim.c3pq.read_probs`.

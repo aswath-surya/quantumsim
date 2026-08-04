@@ -449,11 +449,32 @@ def main() -> int:
                     help="how many sigma every statistical check allows (default 5; "
                          "higher than c3pq_analyze's 4 because these tolerances govern "
                          "maxima over many bins and groups)")
+    ap.add_argument("--arms", choices=("rc", "noisy", "both"), default="rc",
+                    help="which measured series the figure draws (default rc). The QCAP "
+                         "bound is stated for the randomly-compiled circuit, so the "
+                         "un-compiled arm shares the axis without being what the curve "
+                         "bounds. Both are written to the .npz and compared by check [4] "
+                         "whatever this is set to")
     ap.add_argument("--no-assert", action="store_true",
                     help="report the checks but do not fail on them")
     args = ap.parse_args()
+    arms = ("noisy", "rc") if args.arms == "both" else (args.arms,)
 
-    manifest = json.load(open(os.path.join(args.bank, "manifest.json")))
+    # The bank manifest is what makes a directory of QASM a *bank*: it records which
+    # circuits form a group, their weights, and each group's estimator. Nothing here can be
+    # reconstructed from the .qasm files, so say what to run rather than raising the bare
+    # FileNotFoundError -- the most likely cause is a results directory passed as --bank,
+    # or a brickwork bank from generate_exatn_bank.py, which has no manifest at all.
+    bank_manifest = os.path.join(args.bank, "manifest.json")
+    if not os.path.exists(bank_manifest):
+        raise SystemExit(
+            f"no bank manifest at {bank_manifest}.\n"
+            f"  --bank must point at a bounding bank, which build_bounding_bank.py writes:\n"
+            f"      python examples/build_bounding_bank.py --out {args.bank}\n"
+            f"  It is not the run output directory (that is --results), and not the "
+            f"brickwork\n  bank from generate_exatn_bank.py, which has no groups to "
+            f"analyze.")
+    manifest = json.load(open(bank_manifest))
     groups = manifest["groups"]
     cfg, nz = manifest["config"], manifest["noise"]
     noise = NoiseModel(**nz)
@@ -479,6 +500,21 @@ def main() -> int:
           f"theta_zz={nz['theta_zz']} p_readout={nz['p_readout']}")
     print(f"config  K={cfg['trajectories']} instances={cfg['instances']} "
           f"cb_decays={cfg['cb_decays']} oneq_set={cfg['oneq_set']}")
+    # Trajectory noise is 1/sqrt(K) and shot noise is 1/sqrt(S); at the bank defaults the
+    # first is ~150x the second, so a run can look shot-rich and still be unmeasurable.
+    # Worse, at small K the estimator is visibly *quantised*: most sampled trajectories
+    # carry no error at all, so one bad draw out of K moves the averaged distribution by
+    # 1/K of its own distance and the TVDs land in a comb at multiples of ~1/K rather than
+    # scattering around a mean. That reads as outliers on the plot and is not.
+    if cfg["trajectories"] < 32:
+        print(f"        WARNING: K={cfg['trajectories']} trajectories gives ~"
+              f"{1.0 / math.sqrt(cfg['trajectories']):.2f} trajectory noise per arm, "
+              f"against ~{1.0 / math.sqrt(shots):.4f} from {shots} shots. The TVD points "
+              f"will be quantised in steps of ~1/K, not scattered. Rebuild the bank with "
+              f"--trajectories 150 before reading the figure quantitatively.")
+    if cfg["instances"] < 5:
+        print(f"        NOTE: instances={cfg['instances']}, so each depth gets only "
+              f"{cfg['instances']} marker(s) per arm on the figure.")
     if run.get("failed"):
         print(f"        {len(run['failed'])} circuits FAILED in the run "
               f"(first: {list(run['failed'])[:2]})")
@@ -587,7 +623,7 @@ def main() -> int:
             n, modes, depths, series,
             f"K={cfg['trajectories']} trajectories, "
             rf"$\theta_{{zz}}$={nz['theta_zz']}, $e_F$ from {source}",
-            source=f"ExaTN, {shots} shots/circuit"))
+            source=f"ExaTN, {shots} shots/circuit", arms=arms))
 
     npz = metrics.save_results(
         os.path.join(args.out,

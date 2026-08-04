@@ -429,7 +429,16 @@ def bounds_for(n, mode, depths, efs, ro_fid, ro_std, cycles):
     return np.array([b["error"] for b in out]), np.array([b["std"] for b in out])
 
 
-def figure(path, n, modes, depths, series, title_extra, source="C-3PQ exact trajectories"):
+def figure(path, n, modes, depths, series, title_extra, source="C-3PQ exact trajectories",
+           arms=("noisy", "rc")):
+    """The TVD-vs-bound plot. ``arms`` selects which measured series are drawn.
+
+    The bound is stated for the randomly-compiled circuit, so ``arms=("rc",)`` is the
+    honest minimal plot: un-compiled points share the axis but are not what the orange
+    curve bounds. Both are always written to the `.npz` whatever is drawn here, and check
+    [4] compares them regardless -- dropping a series from the figure is a presentation
+    choice and never removes a check.
+    """
     fig, axes = plt.subplots(1, len(modes), figsize=(6 * len(modes), 4.8), sharey=True,
                              squeeze=False)
     for ax, mode in zip(axes[0], modes):
@@ -438,10 +447,10 @@ def figure(path, n, modes, depths, series, title_extra, source="C-3PQ exact traj
         # rather than letting a caret-free marker imply a measurement -- see tvd_from_topk.
         lb = s.get("tvd_is_lower_bound")
         mk, suffix = ("^", r" (lower bound)") if lb else ("s", "")
-        for d, pts in zip(depths, s["noisy"]):
+        for d, pts in zip(depths, s["noisy"] if "noisy" in arms else []):
             ax.plot([d] * len(pts), pts, mk, color="#009E73", ms=4, alpha=0.45,
                     label="measured TVD, NOT compiled" + suffix if d == depths[0] else None)
-        for d, pts in zip(depths, s["rc"]):
+        for d, pts in zip(depths, s["rc"] if "rc" in arms else []):
             ax.plot([d] * len(pts), pts, "^" if lb else "o", color="#0072B2", ms=5,
                     alpha=0.7,
                     label="measured TVD, randomly compiled" + suffix if d == depths[0] else None)
