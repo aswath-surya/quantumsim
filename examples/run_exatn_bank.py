@@ -139,21 +139,17 @@ def check_environment():
     try:
         import xacc
         print("xacc: IMPORTABLE")
-<<<<<<< HEAD
-        
         # Use Initialize() as per working script
         xacc.Initialize()
         
         # Check for TNQVM accelerator
         try:
             xacc.getAccelerator("tnqvm")
-=======
         # We can't easily get version without calling it, but let's try init
         xacc.Initialize()
         accels = xacc.getAccelerators()
         print(f"Available accelerators: {accels}")
         if "tnqvm" in accels:
->>>>>>> 243a4489fc70831b85c8cf0d9341f858ba4fdbe5
             print("TNQVM accelerator: AVAILABLE")
         except Exception:
             print("TNQVM accelerator: NOT FOUND")
