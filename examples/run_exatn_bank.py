@@ -415,14 +415,17 @@ def main():
 
     for qasm_path in qasm_files:
         rel_path = str(qasm_path.relative_to(bank_path))
-        
-        if args.resume and rel_path in manifest.completed:
+        result_path = out_dir / f"{qasm_path.stem}.f64"
+
+        # Two independent records of "already done". The manifest is the bookkeeping; the
+        # .f64 on disk is the artefact, and it is the one that survives sharding -- each
+        # shard keeps its own manifest, so work finished by an earlier run or by a
+        # differently-sharded one is visible only on disk. Checking both means --resume
+        # does the right thing when the shard count changes between runs.
+        if not args.overwrite and args.resume and (
+                rel_path in manifest.completed or result_path.exists()):
             skipped += 1
             continue
-        if not args.overwrite and (out_dir / f"{Path(qasm_path.stem)}.f64").exists():
-            # If we are not resuming and not overwriting, but the file exists, we might skip
-            # But resume is the explicit flag for this.
-            pass
 
         if args.dry_run:
             logger.info(f"Dry-run: would process {rel_path}")
@@ -431,12 +434,11 @@ def main():
         try:
             logger.info(f"Processing {rel_path}...")
             res = backend.run_qasm(qasm_path)
-            
-            # C3PQ expects results named after the group/stem.
-            # Filename: tdv_n02_d001_i000_ideal.qasm -> tdv_n02_d001_i000_ideal.f64
-            result_filename = f"{qasm_path.stem}.f64"
-            result_path = out_dir / result_filename
-            
+
+            # C3PQ expects results named after the group/stem, and the bank's stems are
+            # unique across widths, kinds and trajectories -- so the flat layout here is
+            # collision-free and exatn_analyze.py can find a group's members by name.
+            # Filename: tvd_n02_d001_i000_ideal_k000.qasm -> ..._k000.f64
             write_c3pq_probs(result_path, res.counts, res.num_qubits)
             
             manifest.completed.append(rel_path)
