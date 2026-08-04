@@ -139,21 +139,31 @@ def check_environment():
     try:
         import xacc
         print("xacc: IMPORTABLE")
-        # We can't easily get version without calling it, but let's try init
-        xacc.init()
-        accels = xacc.getAccelerators()
-        print(f"Available accelerators: {accels}")
-        if "tnqvm" in accels:
+        
+        # Use Initialize() as per working script
+        xacc.Initialize()
+        
+        # Check for TNQVM accelerator
+        try:
+            xacc.getAccelerator("tnqvm")
             print("TNQVM accelerator: AVAILABLE")
-        else:
+        except Exception:
             print("TNQVM accelerator: NOT FOUND")
         
-        compilers = xacc.getCompilers()
-        print(f"Available compilers: {compilers}")
+        # Check for common compilers
+        candidate_compilers = ["xasm", "staq", "openqasm", "qasm"]
+        available_compilers = []
+        for name in candidate_compilers:
+            try:
+                xacc.getCompiler(name)
+                available_compilers.append(name)
+            except Exception:
+                pass
+        print(f"Available candidate compilers: {available_compilers}")
         
         # Try creating a visitor
         try:
-            qpu = xacc.getAccelerator("tnqvm", {"tnqvm-visitor": "exatn"})
+            xacc.getAccelerator("tnqvm", {"tnqvm-visitor": "exatn"})
             print("ExaTN visitor: SUCCESSFUL instantiation")
         except Exception as e:
             print(f"ExaTN visitor: FAILED instantiation ({e})")
