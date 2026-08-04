@@ -53,21 +53,9 @@ class ExaTNBackend:
             )
 
         try:
-            # Initialize XACC
-            xacc.init()
+            # Initialize XACC - using Initialize() based on working script
+            xacc.Initialize()
             
-            # Log available accelerators and compilers for diagnostics
-            accels = xacc.getAccelerators()
-            compilers = xacc.getCompilers()
-            logger.info(f"XACC initialized. Available accelerators: {accels}")
-            logger.info(f"XACC initialized. Available compilers: {compilers}")
-
-            if "tnqvm" not in accels:
-                raise RuntimeError(
-                    f"TNQVM accelerator not found in XACC available accelerators: {accels}. "
-                    "Ensure the TNQVM plugin is installed and available in XACC's path."
-                )
-
             # Attempt to instantiate the accelerator
             try:
                 self.qpu = xacc.getAccelerator(
@@ -83,23 +71,23 @@ class ExaTNBackend:
                     "Check if the visitor is supported by the installed TNQVM/ExaTN version."
                 )
 
-            # Determine which OpenQASM compiler to use
-            # Preference: staq -> openqasm -> qasm
-            candidate_compilers = ["staq", "openqasm", "qasm"]
+            # Determine which OpenQASM compiler to use.
+            # The working script uses 'xasm'.
+            candidate_compilers = ["xasm", "staq", "openqasm", "qasm"]
             self.compiler_name = None
             for name in candidate_compilers:
-                if name in compilers:
+                try:
+                    self.compiler = xacc.getCompiler(name)
                     self.compiler_name = name
                     break
+                except Exception:
+                    continue
             
             if self.compiler_name is None:
-                # Last resort: just try to get any compiler that might work or fail
                 raise RuntimeError(
-                    f"No supported OpenQASM compiler found. Candidates {candidate_compilers} "
-                    f"were not in available compilers: {compilers}."
+                    f"No supported OpenQASM compiler found. Tried {candidate_compilers}."
                 )
             
-            self.compiler = xacc.getCompiler(self.compiler_name)
             logger.info(f"XACC backend initialized: Accelerator=tnqvm, Visitor={self.visitor}, Compiler={self.compiler_name}")
 
         except Exception as e:
@@ -143,38 +131,26 @@ class ExaTNBackend:
             # We need to ensure the circuit has terminal measurements on all qubits.
             exec_circ = self._ensure_terminal_measurements(exec_circ, num_qubits)
 
-            # Allocate XACC buffer
-            # For shot-based simulation, we usually need a buffer to store results
-            # Depending on the version, we might use a specific buffer type.
+            # Allocate XACC qubits
             try:
-                # Using a basic buffer for state/results
-                buffer = xacc.getBuffer(num_qubits)
+                # Using qalloc based on working script
+                q = xacc.qalloc(num_qubits)
             except Exception as e:
-                raise RuntimeError(f"Failed to allocate XACC buffer for {num_qubits} qubits: {e}")
+                raise RuntimeError(f"Failed to allocate XACC qubits for {num_qubits} qubits: {e}")
 
             # Execute
             try:
-                # run() usually takes (circuit, buffer)
-                # For shot-based simulation, the accelerator is already configured with shots
-                result_buffer = self.qpu.run(exec_circ, buffer)
+                # execute() takes (qubit_alloc, program)
+                self.qpu.execute(q, exec_circ)
             except Exception as e:
                 raise RuntimeError(f"Simulation failure for {qasm_path}: {e}")
 
             # Retrieve shot counts
-            # Result buffers in XACC for shot-based runs often provide a dictionary
-            # or a method to get counts. 
             try:
-                # Common ways to get counts from XACC result buffer:
-                # 1. If result_buffer is a dict-like object
-                if hasattr(result_buffer, "getCounts"):
-                    raw_counts = result_buffer.getCounts()
-                elif isinstance(result_buffer, dict):
-                    raw_counts = result_buffer
-                else:
-                    # Try converting to dict or using standard XACC access
-                    raw_counts = dict(result_buffer)
+                # Based on working script: q.getMeasurementCounts()
+                raw_counts = q.getMeasurementCounts()
             except Exception as e:
-                raise RuntimeError(f"Failed to extract counts from XACC result buffer: {e}")
+                raise RuntimeError(f"Failed to extract counts from XACC qubits: {e}")
 
             # Normalize keys to zero-padded binary strings of length num_qubits
             counts = self.normalize_counts(raw_counts, num_qubits, reverse_bits=False)
