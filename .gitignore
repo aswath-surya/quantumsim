@@ -20,6 +20,9 @@ staging_scaling/
 qasm_bank/
 qasm_bank_bounding/
 qasm_bank_scaling/
+qasm_bank_test/
+test_bank/
+qasm_bank_test_full/
 tmp_bank/
 tmp_results/
 tmp_staging/
