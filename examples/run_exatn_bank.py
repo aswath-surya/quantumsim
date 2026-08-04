@@ -139,36 +139,18 @@ def check_environment():
         import xacc
 
         print("xacc: IMPORTABLE")
-<<<<<<< HEAD
-        # Use Initialize() as per working script
-=======
 
-        # Initialize XACC's plugin registry.
->>>>>>> 51d7c3c (Resolve run_exatn_bank merge conflict)
+        # Initialize XACC
         xacc.Initialize()
 
-        # Check for TNQVM directly.
+        # Check TNQVM
         try:
-<<<<<<< HEAD
-            xacc.getAccelerator("tnqvm")
-        # We can't easily get version without calling it, but let's try init
-        xacc.Initialize()
-        accels = xacc.getAccelerators()
-        print(f"Available accelerators: {accels}")
-        if "tnqvm" in accels:
-            print("TNQVM accelerator: AVAILABLE")
-        except Exception:
-            print("TNQVM accelerator: NOT FOUND")
-        
-        # Check for common compilers
-=======
             accelerator = xacc.getAccelerator("tnqvm")
             print(f"TNQVM accelerator: AVAILABLE ({accelerator.name()})")
         except Exception as exc:
             print(f"TNQVM accelerator: NOT FOUND ({exc})")
 
-        # Check for common compilers.
->>>>>>> 51d7c3c (Resolve run_exatn_bank merge conflict)
+        # Check available compilers
         candidate_compilers = ["xasm", "staq", "openqasm", "qasm"]
         available_compilers = []
 
@@ -181,15 +163,14 @@ def check_environment():
 
         print(f"Available candidate compilers: {available_compilers}")
 
-        # Try creating the TNQVM ExaTN visitor.
+        # Check ExaTN visitor
         try:
             accelerator = xacc.getAccelerator(
                 "tnqvm",
                 {"tnqvm-visitor": "exatn"},
             )
             print(
-                "ExaTN visitor: SUCCESSFUL instantiation "
-                f"({accelerator.name()})"
+                f"ExaTN visitor: SUCCESSFUL instantiation ({accelerator.name()})"
             )
         except Exception as exc:
             print(f"ExaTN visitor: FAILED instantiation ({exc})")
