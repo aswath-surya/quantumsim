@@ -132,18 +132,24 @@ def write_c3pq_probs(path: Path, counts: Dict[str, int], n_qubits: int):
 def check_environment():
     """Reports XACC/ExaTN environment status."""
     print("--- XACC/ExaTN Environment Check ---")
-    import sys
     print(f"Python executable: {sys.executable}")
     print(f"Python version: {sys.version}")
-    
+
     try:
         import xacc
+
         print("xacc: IMPORTABLE")
+<<<<<<< HEAD
         # Use Initialize() as per working script
+=======
+
+        # Initialize XACC's plugin registry.
+>>>>>>> 51d7c3c (Resolve run_exatn_bank merge conflict)
         xacc.Initialize()
-        
-        # Check for TNQVM accelerator
+
+        # Check for TNQVM directly.
         try:
+<<<<<<< HEAD
             xacc.getAccelerator("tnqvm")
         # We can't easily get version without calling it, but let's try init
         xacc.Initialize()
@@ -155,28 +161,44 @@ def check_environment():
             print("TNQVM accelerator: NOT FOUND")
         
         # Check for common compilers
+=======
+            accelerator = xacc.getAccelerator("tnqvm")
+            print(f"TNQVM accelerator: AVAILABLE ({accelerator.name()})")
+        except Exception as exc:
+            print(f"TNQVM accelerator: NOT FOUND ({exc})")
+
+        # Check for common compilers.
+>>>>>>> 51d7c3c (Resolve run_exatn_bank merge conflict)
         candidate_compilers = ["xasm", "staq", "openqasm", "qasm"]
         available_compilers = []
+
         for name in candidate_compilers:
             try:
                 xacc.getCompiler(name)
                 available_compilers.append(name)
             except Exception:
                 pass
+
         print(f"Available candidate compilers: {available_compilers}")
-        
-        # Try creating a visitor
+
+        # Try creating the TNQVM ExaTN visitor.
         try:
-            xacc.getAccelerator("tnqvm", {"tnqvm-visitor": "exatn"})
-            print("ExaTN visitor: SUCCESSFUL instantiation")
-        except Exception as e:
-            print(f"ExaTN visitor: FAILED instantiation ({e})")
-            
-    except ImportError:
-        print("xacc: NOT IMPORTABLE")
-    except Exception as e:
-        print(f"XACC initialization error: {e}")
-    
+            accelerator = xacc.getAccelerator(
+                "tnqvm",
+                {"tnqvm-visitor": "exatn"},
+            )
+            print(
+                "ExaTN visitor: SUCCESSFUL instantiation "
+                f"({accelerator.name()})"
+            )
+        except Exception as exc:
+            print(f"ExaTN visitor: FAILED instantiation ({exc})")
+
+    except ImportError as exc:
+        print(f"xacc: NOT IMPORTABLE ({exc})")
+    except Exception as exc:
+        print(f"XACC initialization error: {exc}")
+
     print("------------------------------------")
 
 def main():
