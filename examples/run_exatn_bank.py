@@ -185,8 +185,8 @@ def check_environment():
 def main():
     parser = argparse.ArgumentParser(description="Run XACC/ExaTN simulation bank.")
     parser.add_argument("--check-environment", action="store_true", help="Check XACC/ExaTN installation and exit.")
-    parser.add_argument("--qasm-bank", type=str, required=False, help="Path to compiled QASM bank")
-    parser.add_argument("--output-dir", type=str, required=False, help="Directory for result files")
+    parser.add_argument("--qasm-bank", "--bank", type=str, required=False, help="Path to compiled QASM bank")
+    parser.add_argument("--output-dir", "--out", type=str, required=False, help="Directory for result files")
     parser.add_argument("--shots", type=int, default=10000, help="Number of shots per circuit")
     parser.add_argument("--visitor", type=str, default="exatn", help="TNQVM visitor name")
     parser.add_argument("--pattern", type=str, default="*.qasm", help="Glob pattern for QASM files")
