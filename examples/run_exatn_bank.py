@@ -91,32 +91,9 @@ def write_c3pq_probs(path: Path, counts: Dict[str, int], n_qubits: int):
         # Write zeros or handle as error; here we write zeros
         pass
     else:
+        # C3PQ indexes states with qubit 0 as the LSB, and ExaTNBackend.normalize_counts
+        # already emits MSB-first keys, so int(bitstring, 2) is the state index directly.
         for bitstring, count in counts.items():
-            # C3PQ convention: qubit i is bit i (LSB = qubit 0)
-            # But we must be careful about how the binary string was built.
-            # If normalize_counts produced '001' where bit 0 is '1', 
-            # then int('001', 2) would be 1.
-            # However, usually binary strings are MSB leftmost.
-            # If '001' means qubit 0=0, 1=0, 2=1, then the index is 1 << 2 = 4.
-            # If '100' means qubit 0=1, 1=0, 2=0, then index is 1 << 0 = 1.
-            # The critical part is that it must match c3pq.read_probs.
-            
-            # Based on proxysim/c3pq.py and base.py:
-            # "index i is qubit i"
-            # "h q[0] strides by 1" -> qubit 0 is LSB.
-            
-            # If our bitstring is 'b_{n-1}...b_1b_0', then int(bitstring, 2)
-            # treats b_0 as LSB. 
-            # Let's assume normalize_counts returns strings where 
-            # the rightmost character is qubit 0.
-            
-            # If the bitstring is '001' and qubit 0 is 1, int('001', 2) = 1. Correct.
-            # If the bitstring is '100' and qubit 0 is 1, int('100', 2) = 4. Wrong.
-            
-            # In our current normalize_counts: 
-            # it just zfills. We need to ensure the string format matches the index.
-            # To be safe, we'll handle this in the normalization logic.
-            
             try:
                 idx = int(bitstring, 2)
                 if 0 <= idx < dim:
@@ -150,18 +127,19 @@ def check_environment():
         except Exception as exc:
             print(f"TNQVM accelerator: NOT FOUND ({exc})")
 
-        # Check available compilers
-        candidate_compilers = ["xasm", "staq", "openqasm", "qasm"]
-        available_compilers = []
-
-        for name in candidate_compilers:
+        # Check which compilers can actually parse OpenQASM 2.0. Resolving the service is
+        # not sufficient -- 'xasm' resolves everywhere and parses XACC's own DSL, not QASM.
+        probe = (
+            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
+            "h q[0];\ncx q[0],q[1];\nmeasure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
+        )
+        for name in ["staq", "openqasm", "qasm", "xasm"]:
             try:
-                xacc.getCompiler(name)
-                available_compilers.append(name)
-            except Exception:
-                pass
-
-        print(f"Available candidate compilers: {available_compilers}")
+                xacc.getCompiler(name).compile(probe)
+                print(f"Compiler '{name}': PARSES OpenQASM 2.0")
+            except Exception as exc:
+                first = str(exc).strip().splitlines()[0] if str(exc) else repr(exc)
+                print(f"Compiler '{name}': unusable ({first})")
 
         # Check ExaTN visitor
         try:
@@ -174,6 +152,33 @@ def check_environment():
             )
         except Exception as exc:
             print(f"ExaTN visitor: FAILED instantiation ({exc})")
+
+        # Bit-order probe: X on qubit 0 only. XACC's convention puts qubit 0 leftmost, so
+        # the raw key should be '10'; the normalized key must be '01' (index 1).
+        try:
+            from proxysim.backends.exatn_backend import ExaTNBackend
+
+            backend = ExaTNBackend(shots=64)
+            circ = backend._extract_composite(
+                backend.compiler.compile(
+                    'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
+                    "x q[0];\nmeasure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
+                )
+            )
+            buf = xacc.qalloc(2)
+            backend.qpu.execute(buf, circ)
+            raw = dict(buf.getMeasurementCounts())
+            normalized = backend.normalize_counts(raw, 2, backend.reverse_bits)
+            print(f"Bit-order probe (x q[0]): raw={raw} normalized={normalized}")
+            if set(normalized) == {"01"}:
+                print("Bit order: OK (qubit 0 is the LSB of the C3PQ state index)")
+            else:
+                print(
+                    "Bit order: MISMATCH -- expected {'01'}. "
+                    f"Re-run with reverse_bits={not backend.reverse_bits}."
+                )
+        except Exception as exc:
+            print(f"Bit-order probe: FAILED ({exc})")
 
     except ImportError as exc:
         print(f"xacc: NOT IMPORTABLE ({exc})")
@@ -194,6 +199,13 @@ def main():
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing results")
     parser.add_argument("--resume", action="store_true", help="Skip completed files")
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
+    parser.add_argument(
+        "--no-reverse-bits",
+        action="store_true",
+        help="Do not reverse XACC bitstrings. XACC reports qubit 0 leftmost while C3PQ "
+             "indexes qubit 0 as the LSB, so reversing is the default; use this only if "
+             "--check-environment reports a bit-order mismatch.",
+    )
     parser.add_argument("--manifest", type=str, default="manifest.json", help="Manifest filename relative to output-dir")
     parser.add_argument("--fail-fast", action="store_true", help="Exit immediately on first failure")
     parser.add_argument("--dry-run", action="store_true", help="List files to be processed without executing")
@@ -232,7 +244,12 @@ def main():
 
     # Initialize Backend
     try:
-        backend = ExaTNBackend(shots=args.shots, visitor=args.visitor, seed=args.seed)
+        backend = ExaTNBackend(
+            shots=args.shots,
+            visitor=args.visitor,
+            seed=args.seed,
+            reverse_bits=not args.no_reverse_bits,
+        )
         manifest.compiler = backend.compiler_name
     except Exception as e:
         logger.error(f"Backend initialization failed: {e}")

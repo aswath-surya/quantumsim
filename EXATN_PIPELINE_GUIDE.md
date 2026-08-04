@@ -80,5 +80,6 @@ python examples/c3pq_analyze.py --bank test_bank --results test_results --stagin
 ## 4. Technical Details
 
 - **Result Format**: Results are stored as raw `float64` binary arrays (`numpy.tofile`).
-- **Bit Order**: The pipeline implements LSB (Least Significant Bit) convention where qubit $i$ corresponds to bit $i$.
+- **Bit Order**: The pipeline implements LSB (Least Significant Bit) convention where qubit $i$ corresponds to bit $i$. XACC reports measurement bitstrings with qubit 0 *leftmost*, so the backend reverses them; `--check-environment` runs an `x q[0]` probe that verifies this, and `--no-reverse-bits` overrides it if a build differs.
+- **QASM Compiler**: XACC must parse the bank with `staq` (its OpenQASM 2.0 front end), *not* `xasm`. `xasm` is XACC's own DSL and is always registered, so the backend probe-compiles each candidate rather than trusting the service lookup. A `mismatched input '// ...' expecting {'__qpu__', '['}` error means `xasm` was selected.
 - **Compatibility**: Output files are 100% compatible with `proxysim.c3pq.read_probs`.

@@ -1,8 +1,9 @@
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 # Setup logging
 logger = logging.getLogger("proxysim.backends.exatn")
@@ -12,6 +13,25 @@ try:
     XACC_AVAILABLE = True
 except ImportError:
     XACC_AVAILABLE = False
+
+# A minimal, unambiguously valid OpenQASM 2.0 program used at init time to prove that a
+# candidate XACC compiler really speaks OpenQASM. Merely resolving the service name is not
+# enough: 'xasm' is always registered but parses XACC's own DSL, so it resolves fine and
+# then rejects every line of every .qasm file in the bank.
+_PROBE_QASM = """OPENQASM 2.0;
+include "qelib1.inc";
+qreg q[2];
+creg c[2];
+h q[0];
+cx q[0],q[1];
+measure q[0] -> c[0];
+measure q[1] -> c[1];
+"""
+
+# Ordered by preference. 'staq' is XACC's bundled OpenQASM 2.0 front end; the others are
+# aliases some builds register. 'xasm' is deliberately absent -- it cannot parse OpenQASM.
+_QASM_COMPILERS = ("staq", "openqasm", "qasm")
+
 
 @dataclass
 class SimulationResult:
@@ -35,13 +55,19 @@ class ExaTNBackend:
         shots: int,
         visitor: str = "exatn",
         seed: Optional[int] = None,
+        reverse_bits: bool = True,
     ) -> None:
         self.shots = shots
         self.visitor = visitor
         self.seed = seed
+        # XACC reports measurement bitstrings with qubit 0 as the *leftmost* character,
+        # while the C3PQ .f64 convention indexes states with qubit 0 as the LSB. Reversing
+        # is therefore the correct default; expose it so a differing build can be corrected
+        # without editing the backend.
+        self.reverse_bits = reverse_bits
         self.qpu = None
         self.compiler = None
-        
+
         self._initialize_xacc()
 
     def _initialize_xacc(self) -> None:
@@ -71,23 +97,31 @@ class ExaTNBackend:
                     "Check if the visitor is supported by the installed TNQVM/ExaTN version."
                 )
 
-            # Determine which OpenQASM compiler to use.
-            # The working script uses 'xasm'.
-            candidate_compilers = ["xasm", "staq", "openqasm", "qasm"]
+            # Determine which OpenQASM compiler to use. Each candidate must survive an
+            # actual compile of _PROBE_QASM -- a registered service name proves nothing.
             self.compiler_name = None
-            for name in candidate_compilers:
+            probe_errors: Dict[str, str] = {}
+            for name in _QASM_COMPILERS:
                 try:
-                    self.compiler = xacc.getCompiler(name)
-                    self.compiler_name = name
-                    break
-                except Exception:
+                    candidate = xacc.getCompiler(name)
+                    ir = candidate.compile(_PROBE_QASM)
+                    self._extract_composite(ir)
+                except Exception as e:
+                    probe_errors[name] = str(e).strip().splitlines()[0] if str(e) else repr(e)
                     continue
-            
+                self.compiler = candidate
+                self.compiler_name = name
+                break
+
             if self.compiler_name is None:
+                detail = "; ".join(f"{k}: {v}" for k, v in probe_errors.items())
                 raise RuntimeError(
-                    f"No supported OpenQASM compiler found. Tried {candidate_compilers}."
+                    "No XACC compiler in this installation can parse OpenQASM 2.0. "
+                    f"Tried {list(_QASM_COMPILERS)} -- {detail}. "
+                    "The 'staq' compiler plugin ships with XACC; if it is missing, rebuild "
+                    "XACC with the staq TPL enabled."
                 )
-            
+
             logger.info(f"XACC backend initialized: Accelerator=tnqvm, Visitor={self.visitor}, Compiler={self.compiler_name}")
 
         except Exception as e:
@@ -115,18 +149,12 @@ class ExaTNBackend:
                     "they may need to be decomposed manually."
                 )
 
-            # Extract executable composite circuit
-            # In XACC, getComposite() often returns the root circuit
-            if hasattr(circ, "getComposite"):
-                exec_circ = circ.getComposite()
-            else:
-                exec_circ = circ
+            # Extract executable composite circuit from the compiled IR
+            exec_circ = self._extract_composite(circ)
 
             # Determine number of qubits
-            # This can be tricky depending on XACC version. 
-            # We try to get it from the circuit or by parsing the QASM.
             num_qubits = self._infer_num_qubits(qasm_text, exec_circ)
-            
+
             # Measurement handling
             # We need to ensure the circuit has terminal measurements on all qubits.
             exec_circ = self._ensure_terminal_measurements(exec_circ, num_qubits)
@@ -153,8 +181,8 @@ class ExaTNBackend:
                 raise RuntimeError(f"Failed to extract counts from XACC qubits: {e}")
 
             # Normalize keys to zero-padded binary strings of length num_qubits
-            counts = self.normalize_counts(raw_counts, num_qubits, reverse_bits=False)
-            
+            counts = self.normalize_counts(raw_counts, num_qubits, reverse_bits=self.reverse_bits)
+
             # Validate total shots
             total_shots = sum(counts.values())
             if total_shots != self.shots:
@@ -171,6 +199,7 @@ class ExaTNBackend:
                 metadata={
                     "tnqvm_visitor": self.visitor,
                     "xacc_compiler": self.compiler_name,
+                    "reverse_bits": self.reverse_bits,
                 }
             )
 
@@ -178,39 +207,84 @@ class ExaTNBackend:
             logger.error(f"Error running {qasm_path}: {e}")
             raise
 
+    @staticmethod
+    def _extract_composite(ir) -> Any:
+        """Pull the single executable CompositeInstruction out of a compiled XACC IR.
+
+        ``IR::getComposite`` takes a name, so calling it bare raises TypeError under
+        pybind11 -- ``getComposites()`` is the accessor that returns the kernel list.
+        """
+        if hasattr(ir, "getComposites"):
+            composites = ir.getComposites()
+            if not composites:
+                raise RuntimeError("Compiled IR contains no composite instructions (empty kernel).")
+            return composites[0]
+        # Already a CompositeInstruction (some compilers hand one back directly).
+        if hasattr(ir, "getInstructions"):
+            return ir
+        raise RuntimeError(f"Unrecognized XACC compile() return type: {type(ir)!r}")
+
     def _infer_num_qubits(self, qasm_text: str, circ) -> int:
-        """Attempts to determine the number of qubits from the QASM or XACC circuit."""
-        # Try XACC circuit first
-        if hasattr(circ, "getNQuBits"):
-            return circ.getNQuBits()
-        
-        # Fallback: parse QASM for qreg
-        import re
-        match = re.search(r"qreg\s+\w+\[(\d+)\]", qasm_text)
-        if match:
-            return int(match.group(1))
-        
+        """Determine the circuit width, preferring the QASM ``qreg`` declaration.
+
+        The declaration is authoritative: a compiled composite only knows about qubits
+        that some instruction actually touches, so an idle trailing qubit would silently
+        shrink the width and corrupt the 2^n .f64 layout downstream.
+        """
+        widths = [int(m) for m in re.findall(r"qreg\s+\w+\[(\d+)\]", qasm_text)]
+        if widths:
+            if len(widths) > 1:
+                raise RuntimeError(
+                    f"Multiple qreg declarations found ({widths}); only single-register "
+                    "QASM is supported by the C3PQ .f64 layout."
+                )
+            return widths[0]
+
+        for accessor in ("nLogicalBits", "nPhysicalBits", "getNQuBits"):
+            fn = getattr(circ, accessor, None)
+            if fn is None:
+                continue
+            try:
+                n = int(fn())
+            except Exception:
+                continue
+            if n > 0:
+                return n
+
         raise RuntimeError("Could not determine number of qubits from QASM or XACC circuit.")
 
     def _ensure_terminal_measurements(self, circ, num_qubits) -> Any:
+        """Guarantee the circuit ends with a terminal measurement of every qubit.
+
+        Unmeasured circuits get measurements appended. Partial or mid-circuit measurement
+        is rejected rather than silently producing a distribution over the wrong register.
         """
-        Ensures the circuit ends with terminal measurements of all qubits.
-        """
-        # This is a simplified implementation. 
-        # In a real XACC scenario, we would inspect the gates of 'circ'.
-        # If measurements are missing or partial, we would append them.
-        # Since we are restricted by the requirement to reject partial/mid-circuit,
-        # we will assume the QASM files in the bank already have them, 
-        # or we would need to use the XACC API to add measurement gates.
-        
-        # For the initial implementation, we rely on the prompt's guidance:
-        # "Terminal measurement of every qubit: execute unchanged."
-        # "No measurements: append terminal computational-basis measurements when supported."
-        
-        # To actually implement this, we would need to know how to append gates to a 
-        # compiled XACC circuit. Often it is easier to modify the QASM before compilation.
-        # However, the backend is supposed to handle this.
-        
+        instructions = list(circ.getInstructions())
+        measured: List[int] = []
+        last_non_measure = -1
+        for idx, inst in enumerate(instructions):
+            if inst.name() == "Measure":
+                measured.extend(int(b) for b in inst.bits())
+            else:
+                last_non_measure = idx
+
+        if not measured:
+            for q in range(num_qubits):
+                circ.addInstruction(xacc.gate.create("Measure", [q]))
+            return circ
+
+        first_measure = next(
+            i for i, inst in enumerate(instructions) if inst.name() == "Measure"
+        )
+        if first_measure < last_non_measure:
+            raise RuntimeError(
+                "Mid-circuit measurement is not supported: gates follow the first Measure."
+            )
+        if sorted(measured) != list(range(num_qubits)):
+            raise RuntimeError(
+                f"Partial measurement is not supported: measured qubits {sorted(measured)} "
+                f"but the register has {num_qubits} qubits."
+            )
         return circ
 
     def normalize_counts(
@@ -220,28 +294,27 @@ class ExaTNBackend:
         reverse_bits: bool,
     ) -> Dict[str, int]:
         """
-        Converts raw count keys to zero-padded binary strings.
-        
-        raw_counts might have integer keys or binary string keys.
+        Converts raw count keys to MSB-first binary strings, i.e. qubit 0 is the rightmost
+        character, so ``int(key, 2)`` is the C3PQ state index.
+
+        XACC hands back strings whose *leftmost* character is qubit 0, so ``reverse_bits``
+        should be True for those. Integer keys are already state indices and are never
+        reversed.
         """
-        normalized = {}
+        normalized: Dict[str, int] = {}
         for key, count in raw_counts.items():
             if isinstance(key, int):
-                # Integer key -> binary string
-                bit_str = bin(key)[2:].zfill(num_qubits)
-            elif isinstance(key, str):
-                # Already string, might need padding or reversing
-                bit_str = key.zfill(num_qubits)
+                bit_str = format(key, f"0{num_qubits}b")
             else:
-                bit_str = str(key).zfill(num_qubits)
-            
-            if reverse_bits:
-                bit_str = bit_str[::-1]
-            
-            # Ensure length is exactly num_qubits
-            if len(bit_str) > num_qubits:
-                bit_str = bit_str[-num_qubits:]
-            
-            normalized[bit_str] = count
-            
+                bit_str = str(key).strip()
+                if len(bit_str) != num_qubits:
+                    raise RuntimeError(
+                        f"XACC returned a {len(bit_str)}-bit key {bit_str!r} for a "
+                        f"{num_qubits}-qubit circuit."
+                    )
+                if reverse_bits:
+                    bit_str = bit_str[::-1]
+
+            normalized[bit_str] = normalized.get(bit_str, 0) + count
+
         return normalized
