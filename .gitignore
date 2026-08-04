@@ -28,6 +28,7 @@ tmp_bank/
 tmp_results/
 tmp_staging/
 results_exatn/
+qasm_bank_bounding_d4/
 *.png
 *.npz
 *.log
