@@ -58,6 +58,74 @@ def save_manifest(path: Path, manifest: RunManifest):
     with open(path, "w") as f:
         json.dump(manifest.to_json(), f, indent=2)
 
+def parse_shard(spec: str) -> Tuple[int, int]:
+    """``"3/8"`` -> ``(3, 8)``. Raises ValueError with a usable message otherwise."""
+    try:
+        index, count = (int(part) for part in spec.split("/"))
+    except Exception:
+        raise ValueError(f"--shard must look like I/N (e.g. 0/8), got {spec!r}")
+    if count < 1 or not 0 <= index < count:
+        raise ValueError(f"--shard {spec}: need 0 <= I < N and N >= 1")
+    return index, count
+
+
+def merge_shards(out_dir: Path, manifest_name: str) -> int:
+    """Fold every ``manifest.shard*of*.json`` in ``out_dir`` into one manifest.
+
+    Shards write separate manifests because a single file cannot be appended to
+    concurrently without losing entries. The analyzer reads one manifest, so they have to
+    be recombined -- and the recombination is also where a mismatch shows up: if two shards
+    disagree on shots, visitor or lowering, their ``.f64`` files are not one population and
+    merging them would hide that behind whichever value happened to be written last.
+    """
+    shards = sorted(out_dir.glob("manifest.shard*of*.json"))
+    if not shards:
+        logger.error(f"no manifest.shard*of*.json in {out_dir}")
+        return 1
+
+    merged: Optional[RunManifest] = None
+    settings: Dict[str, Any] = {}
+    for path in shards:
+        m = load_manifest(path)
+        if m is None:
+            logger.error(f"could not read {path}")
+            return 1
+        this = {"shots": m.shots, "visitor": m.visitor, "lowered": m.lowered,
+                "compiler": m.compiler, "qasm_bank": m.qasm_bank}
+        if merged is None:
+            merged, settings = m, this
+            merged.results_dir = str(out_dir)
+            continue
+        differing = {k: (settings[k], v) for k, v in this.items() if settings[k] != v}
+        if differing:
+            logger.error(
+                f"{path.name} disagrees with {shards[0].name} on "
+                f"{', '.join(f'{k} {a!r} vs {b!r}' for k, (a, b) in differing.items())}. "
+                "These shards did not run the same way; not merging."
+            )
+            return 1
+        merged.completed.extend(m.completed)
+        merged.failed.update(m.failed)
+        merged.skipped.extend(m.skipped)
+
+    # A file can legitimately appear in two shards only if the shard specs overlapped;
+    # dedupe rather than inflate the count, but say so, because it means some work was
+    # done twice and the shard specs were wrong.
+    before = len(merged.completed)
+    merged.completed = sorted(set(merged.completed))
+    if len(merged.completed) != before:
+        logger.warning(f"{before - len(merged.completed)} files were completed by more "
+                       f"than one shard -- check the I/N values used")
+    merged.skipped = sorted(set(merged.skipped))
+
+    save_manifest(out_dir / manifest_name, merged)
+    print(f"merged {len(shards)} shard manifests -> {out_dir / manifest_name}")
+    print(f"  completed {len(merged.completed)}   failed {len(merged.failed)}")
+    if merged.failed:
+        print(f"  first failures: {list(merged.failed)[:3]}")
+    return 1 if merged.failed else 0
+
+
 def parse_qasm_metadata(filename: str) -> Dict[str, Any]:
     """
     Infers metadata from the C3PQ filename convention:
@@ -215,6 +283,22 @@ def main():
              "exact up to a global phase), because the banks here are unlowered proxysim "
              "IR and staq rejects sx/sxdg/cp.",
     )
+    parser.add_argument(
+        "--shard",
+        type=str,
+        default=None,
+        metavar="I/N",
+        help="Process only the files whose position in the sorted list is congruent to I "
+             "mod N. Circuits are independent, so N of these run concurrently on one node "
+             "for a near-linear speedup. Each shard keeps its own manifest; combine them "
+             "with --merge-shards once they finish.",
+    )
+    parser.add_argument(
+        "--merge-shards",
+        action="store_true",
+        help="Combine every manifest.shard*of*.json in --output-dir into manifest.json "
+             "and exit. The analyzer reads that one file, so run this after a sharded run.",
+    )
     parser.add_argument("--manifest", type=str, default="manifest.json", help="Manifest filename relative to output-dir")
     parser.add_argument("--fail-fast", action="store_true", help="Exit immediately on first failure")
     parser.add_argument("--dry-run", action="store_true", help="List files to be processed without executing")
@@ -235,22 +319,78 @@ def main():
     bank_path = Path(args.qasm_bank)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    if args.merge_shards:
+        sys.exit(merge_shards(out_dir, args.manifest))
+
+    shard = None
+    if args.shard:
+        try:
+            shard = parse_shard(args.shard)
+        except ValueError as exc:
+            parser.error(str(exc))
+        # Concurrent shards cannot share one manifest file -- the last writer would drop
+        # everyone else's entries. Give each its own unless the caller named one.
+        if args.manifest == "manifest.json":
+            args.manifest = f"manifest.shard{shard[0]}of{shard[1]}.json"
+
     manifest_path = out_dir / args.manifest
-    manifest = load_manifest(manifest_path) or RunManifest(
-        results_dir=str(out_dir),
-        qasm_bank=str(bank_path),
-        shots=args.shots,
-        visitor=args.visitor,
-        lowered=not args.no_lower,
-    )
+    manifest = load_manifest(manifest_path)
+    if manifest is None:
+        manifest = RunManifest(
+            results_dir=str(out_dir),
+            qasm_bank=str(bank_path),
+            shots=args.shots,
+            visitor=args.visitor,
+            lowered=not args.no_lower,
+        )
+    else:
+        # Resuming into a directory whose .f64 files were produced under different
+        # settings silently mixes two populations: the manifest can only record one shot
+        # count, and exatn_analyze.py derives every statistical tolerance from it, so half
+        # the results would be judged against the wrong noise floor. The circuits are
+        # deterministic in their seeds, so growing a bank and resuming is the intended
+        # workflow -- changing how the circuits are *run* mid-directory is not.
+        conflicts = []
+        if manifest.shots != args.shots:
+            conflicts.append(f"shots {manifest.shots} -> {args.shots}")
+        if manifest.lowered != (not args.no_lower):
+            conflicts.append(f"lowered {manifest.lowered} -> {not args.no_lower}")
+        if manifest.visitor != args.visitor:
+            conflicts.append(f"visitor '{manifest.visitor}' -> '{args.visitor}'")
+        if conflicts:
+            logger.error(
+                f"{manifest_path} already describes a run with different settings "
+                f"({'; '.join(conflicts)}). Existing .f64 files in {out_dir} were produced "
+                f"the old way. Either keep the original settings and --resume, or write to "
+                f"a fresh --output-dir."
+            )
+            sys.exit(1)
+        if manifest.qasm_bank != str(bank_path):
+            logger.warning(
+                f"{manifest_path} records bank '{manifest.qasm_bank}' but this run uses "
+                f"'{bank_path}'; updating the record. Stems from two different banks in "
+                f"one directory will not collide, but the provenance will be ambiguous."
+            )
+            manifest.qasm_bank = str(bank_path)
 
     # Discover files
     qasm_files = sorted(list(bank_path.rglob(args.pattern)))
+    discovered = len(qasm_files)
+    if shard:
+        # Stride, not contiguous blocks. The sorted order groups by width, then kind, then
+        # mode, and the kinds differ in cost (a CB sequence of length 24 is not a depth-1
+        # TVD circuit), so contiguous blocks would hand one process all the expensive work.
+        # Taking every Nth file interleaves the kinds and keeps the shards balanced.
+        qasm_files = qasm_files[shard[0]::shard[1]]
     if args.limit:
         qasm_files = qasm_files[:args.limit]
-    
-    logger.info(f"Discovered {len(qasm_files)} QASM files in {bank_path}")
+
+    if shard:
+        logger.info(f"Discovered {discovered} QASM files in {bank_path}; shard "
+                    f"{shard[0]}/{shard[1]} takes {len(qasm_files)}")
+    else:
+        logger.info(f"Discovered {discovered} QASM files in {bank_path}")
 
     # Initialize Backend
     try:
@@ -318,13 +458,26 @@ def main():
 
     # Summary
     print("\n--- Execution Summary ---")
-    print(f"Files discovered: {len(qasm_files)}")
+    if shard:
+        print(f"Shard:            {shard[0]}/{shard[1]} -> {args.manifest}")
+    print(f"Files discovered: {len(qasm_files)}"
+          + (f" (of {discovered} in the bank)" if shard else ""))
     print(f"Completed:        {processed}")
     print(f"Skipped:         {skipped}")
     print(f"Failed:          {failed}")
     print(f"Total shots/file: {args.shots}")
     print(f"Elapsed runtime: {elapsed:.2f}s")
+    if processed:
+        print(f"Per circuit:      {elapsed / processed:.3f}s"
+              f"  -> {discovered * elapsed / processed / 60:.1f} min for the whole bank"
+              + (f" / {shard[1]} shards = "
+                 f"{discovered * elapsed / processed / 60 / shard[1]:.1f} min"
+                 if shard else ""))
     print("-------------------------")
+    if shard:
+        print("Run --merge-shards once every shard has finished:")
+        print(f"  python examples/run_exatn_bank.py --out {out_dir} --bank {bank_path} "
+              f"--merge-shards")
 
     if failed > 0 and not args.fail_fast:
         # Exit nonzero if any failed

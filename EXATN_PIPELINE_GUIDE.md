@@ -57,14 +57,57 @@ python examples/build_bounding_bank.py --out qasm_bank_bounding
   Five or more before the spread means anything.
 
 Trajectory noise is ~1/√K and shot noise ~1/√S, so at K=4 / 100k shots the first is ~150×
-the second. K is the cheaper thing to buy: a production-ish n=2 bank is
+the second. Shots are not what to buy.
+
+#### Sizing it
+
+Per width, the bank is
+
+```
+circuits = 1                                                   # calibration probe
+         + modes x depths x instances x (1 + 2K)               # TVD arms
+         + modes x cycles x cb_depths x cb_decays x (1 + K)    # CB decays
+```
+
+At n=2 (`modes=2, depths=7, cycles=1, cb_depths=6`):
+
+| `--trajectories` | `--instances` | `--cb-decays` | TVD | CB | total | vs. default |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4 | 2 | 4 | 252 | 240 | **493** | 1× (the default smoke config) |
+| 50 | 5 | 4 | 7,070 | 2,448 | **9,519** | 19× |
+| 150 | 5 | 4 | 21,070 | 7,248 | **28,319** | 57× |
+| 150 | 5 | 30 | 21,070 | 54,360 | **75,431** | 153× |
+
+Scale from the elapsed time your last run printed — at n=2 the cost is XACC compile plus
+sampling, roughly linear in circuit count.
+
+**Leave `--cb-decays` alone.** It is the most expensive knob and the least useful one here:
+at `theta_zz == 0` the bound takes its e_F from the Clifford (stim) path, so the CB arms
+only sharpen cross-check [5], and raising decays from 4 to 30 nearly triples the bank to
+buy that alone. `--cb-decays-ref` on the analyzer controls the path that *does* feed the
+bound, and costs seconds.
+
+#### Growing an existing bank
+
+Circuit seeds are deterministic in `(depth, instance, arm, k)`, so raising `--trajectories`
+or `--instances` regenerates the existing files byte-identically — the builder skips them
+and writes only what is new, and `run_exatn_bank.py --resume` skips the `.f64` you already
+have. You pay for the increment:
 
 ```bash
 python examples/build_bounding_bank.py --out qasm_bank_bounding \
-    --trajectories 150 --instances 5 --cb-decays 30 --dry-run   # check the count, then drop --dry-run
+    --trajectories 150 --instances 5 --dry-run     # check the count, then drop --dry-run
+
+python examples/run_exatn_bank.py --bank qasm_bank_bounding --out results_exatn \
+    --shots 100000 --resume                        # same --shots as the original run
+
+python examples/exatn_analyze.py --bank qasm_bank_bounding --results results_exatn
 ```
 
-and `--shots 20000` is then plenty in stage B.
+Keep `--shots` at whatever the directory was first run with. A results directory records
+one shot count and stage C derives every tolerance from it, so mixing two would judge half
+the files against the wrong noise floor; `run_exatn_bank.py` refuses the run rather than
+letting that happen. To change shots, use a fresh `--output-dir`.
 
 ### Stage B: Run the simulations
 One `.f64` per QASM file, named after the file's stem, written flat into the output
@@ -96,6 +139,41 @@ both. Stems will not collide, but the provenance will be wrong.
 - `XACC compiler '...' failed to parse QASM file ...` — the compile itself failed. The
   message says whether lowering was applied, which separates a gate-set problem from a
   compiler-selection one.
+
+#### Running it in parallel on one node
+
+Circuits are independent and each writes its own `.f64`, so the run shards cleanly.
+`--shard I/N` takes every Nth file from the sorted list — a stride rather than a
+contiguous block, so the expensive CB sequences and the cheap short-depth TVD circuits
+spread evenly across shards.
+
+```bash
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1     # each shard is single-threaded; see below
+N=16
+for i in $(seq 0 $((N-1))); do
+  python examples/run_exatn_bank.py --bank qasm_bank_bounding --out results_exatn \
+      --shots 100000 --resume --shard $i/$N > shard$i.log 2>&1 &
+done
+wait
+
+python examples/run_exatn_bank.py --bank qasm_bank_bounding --out results_exatn \
+    --merge-shards
+```
+
+At n=2 nearly all the per-circuit cost is single-threaded Python — qiskit parse, lowering,
+staq compile — not tensor contraction, so this scales close to linearly and the two
+`*_NUM_THREADS` exports matter: without them each shard's MKL will try to grab every core
+and the shards will fight.
+
+Each shard keeps its own `manifest.shardIofN.json`, because concurrent processes appending
+to one file would lose entries. `--merge-shards` folds them into the `manifest.json` that
+stage C reads, and refuses to merge shards that disagree on shots, visitor or lowering.
+
+Use plain background processes inside your existing `salloc`, not `srun -n $N` — ExaTN may
+initialise MPI, and launching the shards as MPI ranks makes them one communicating job
+rather than N independent ones. For the same reason, don't reach for Python
+`multiprocessing` inside the script: `xacc.Initialize()` sets up global state that does not
+survive a fork.
 
 **Tip:** To verify your XACC environment before running a full bank, use:
 ```bash
@@ -175,6 +253,10 @@ python examples/exatn_analyze.py --bank qasm_bank_bounding --results results_exa
 | Only a couple of markers per depth | That is `--instances` from stage A (default 2), one marker per instance per arm. Rebuild the bank with more. |
 | TVD points sitting at 0.25 / 0.5 with nothing in between | Trajectory quantisation at small K, not outliers — see *The defaults are a smoke config* under stage A. Rebuild with `--trajectories 150`. More shots will not help. |
 | Green "NOT compiled" points you don't want | `--arms rc` is the default now; `--arms both` restores them. |
+| `manifest.json already describes a run with different settings` | You changed `--shots`, `--no-lower` or `--visitor` while resuming into a directory that already holds results from the old settings. Keep the original values, or use a fresh `--output-dir`. |
+| `shardXofN.json disagrees with shard0ofN.json` | The shards were not all launched with the same flags. Fix the command and re-run the odd one out; `--resume` makes that cheap. |
+| `no bank manifest` / `no shot count` after a sharded run | You forgot `--merge-shards`. Stage C reads `manifest.json`, which only exists once the shard manifests are folded together. |
+| Sharded run no faster than serial | `OMP_NUM_THREADS`/`MKL_NUM_THREADS` are unset, so every shard is trying to use every core. Export both as 1. |
 
 ## 5. Technical Details
 
