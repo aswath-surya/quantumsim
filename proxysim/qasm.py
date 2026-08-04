@@ -27,6 +27,27 @@ _IR_TO_QASM = {
     "cx": "cx", "cz": "cz", "cy": "cy", "swap": "swap", "cp": "cp",
 }
 
+# Overrides for the strict `qelib1.inc` dialect -- the gate list the original OpenQASM 2.0
+# standard header declares, and all that a conforming parser (staq, and therefore XACC) is
+# obliged to know. `cp` is the one name in _IR_TO_QASM that postdates it; `cu1(lambda)` is
+# the same controlled-phase gate under its qelib1 name, and circuit.py's _QASM_GATE already
+# maps `cu1` back to `cp` on read, so the round trip is unaffected.
+#
+# `sx`/`sxdg` are also absent from qelib1 but have no qelib1 spelling at all -- they must be
+# rewritten as rotations *before* emission. `proxysim.c3pq.lower_for_c3pq` does exactly
+# that, and is what callers targeting this dialect should run first.
+_QELIB1_OVERRIDES = {"cp": "cu1"}
+
+DIALECTS = ("full", "qelib1")
+
+
+def _gate_names(dialect: str) -> dict:
+    if dialect == "full":
+        return _IR_TO_QASM
+    if dialect == "qelib1":
+        return {**_IR_TO_QASM, **_QELIB1_OVERRIDES}
+    raise ValueError(f"circuit_to_qasm: unknown dialect {dialect!r}, expected one of {DIALECTS}")
+
 
 def _fmt_angle(theta: float) -> str:
     """Full-precision angle literal. ``repr`` on a float is the shortest string that
@@ -34,10 +55,10 @@ def _fmt_angle(theta: float) -> str:
     return repr(float(theta))
 
 
-def gate_to_qasm(gate, reg: str = "q") -> str:
+def gate_to_qasm(gate, reg: str = "q", dialect: str = "full") -> str:
     """One QASM statement for one IR gate."""
     try:
-        name = _IR_TO_QASM[gate.name]
+        name = _gate_names(dialect)[gate.name]
     except KeyError:
         raise ValueError(f"circuit_to_qasm: no QASM 2.0 form for gate '{gate.name}'")
     params = f"({','.join(_fmt_angle(p) for p in gate.params)})" if gate.params else ""
@@ -49,7 +70,8 @@ def circuit_to_qasm(circuit: Circuit,
                     measured: Optional[Sequence[int]] = None,
                     qreg: str = "q",
                     creg: str = "c",
-                    header_lines: Iterable[str] = ()) -> str:
+                    header_lines: Iterable[str] = (),
+                    dialect: str = "full") -> str:
     """Serialize an IR :class:`~proxysim.circuit.Circuit` to an OpenQASM 2.0 string.
 
     Parameters
@@ -63,6 +85,12 @@ def circuit_to_qasm(circuit: Circuit,
     header_lines : lines emitted as leading ``//`` comments. Used to make every file in
                    a generated bank self-describing (algorithm, depth, seed, and for CB
                    circuits the prep/measure Pauli needed to analyze it).
+    dialect      : ``'full'`` (default) emits every name in ``_IR_TO_QASM``, which is what
+                   qiskit and this package read back. ``'qelib1'`` restricts to the gates
+                   the original ``qelib1.inc`` declares, spelling ``cp`` as ``cu1`` -- use
+                   it for strict parsers such as staq/XACC, after running
+                   :func:`proxysim.c3pq.lower_for_c3pq` to clear ``sx``/``sxdg``/``s``/``t``,
+                   which have no qelib1 spelling.
     """
     if measured is None:
         measured = list(range(circuit.n_qubits))
@@ -72,14 +100,16 @@ def circuit_to_qasm(circuit: Circuit,
     out += ['OPENQASM 2.0;', 'include "qelib1.inc";', f"qreg {qreg}[{circuit.n_qubits}];"]
     if measured:
         out.append(f"creg {creg}[{len(measured)}];")
-    out += [gate_to_qasm(g, qreg) for g in circuit.gates]
+    out += [gate_to_qasm(g, qreg, dialect) for g in circuit.gates]
     out += [f"measure {qreg}[{q}] -> {creg}[{k}];" for k, q in enumerate(measured)]
     return "\n".join(out) + "\n"
 
 
-def write_qasm(path, circuit: Circuit, measured=None, header_lines=()) -> int:
+def write_qasm(path, circuit: Circuit, measured=None, header_lines=(),
+               dialect: str = "full") -> int:
     """Write ``circuit`` to ``path`` as QASM 2.0; return the number of bytes written."""
-    text = circuit_to_qasm(circuit, measured=measured, header_lines=header_lines)
+    text = circuit_to_qasm(circuit, measured=measured, header_lines=header_lines,
+                           dialect=dialect)
     with open(path, "w") as fh:
         fh.write(text)
     return len(text)

@@ -56,10 +56,17 @@ class ExaTNBackend:
         visitor: str = "exatn",
         seed: Optional[int] = None,
         reverse_bits: bool = True,
+        lower: bool = True,
     ) -> None:
         self.shots = shots
         self.visitor = visitor
         self.seed = seed
+        # Banks in this repo are written as unlowered proxysim IR, which includes gates
+        # (`sx`, `sxdg`, `cp`) that the original qelib1.inc never declared and staq
+        # therefore rejects. Rewriting them costs nothing and is exact up to a global
+        # phase -- see _lower_qasm.
+        self.lower = lower
+        self._lower_warned = False
         # XACC reports measurement bitstrings with qubit 0 as the *leftmost* character,
         # while the C3PQ .f64 convention indexes states with qubit 0 as the LSB. Reversing
         # is therefore the correct default; expose it so a differing build can be corrected
@@ -137,16 +144,20 @@ class ExaTNBackend:
             with open(qasm_path, "r") as f:
                 qasm_text = f.read()
 
+            source, lowered = (self._lower_qasm(qasm_text, qasm_path) if self.lower
+                               else (qasm_text, False))
+
             # Compile QASM to XACC circuit
             try:
                 # The compiler may expect the QASM as a string or file
                 # We use the compiler we detected during init
-                circ = self.compiler.compile(qasm_text)
+                circ = self.compiler.compile(source)
             except Exception as e:
                 raise RuntimeError(
                     f"XACC compiler '{self.compiler_name}' failed to parse QASM file {qasm_path}: {e}. "
-                    "Ensure the file is valid OpenQASM 2.0. If unsupported gates are present, "
-                    "they may need to be decomposed manually."
+                    f"Ensure the file is valid OpenQASM 2.0 (lowering {'was' if lowered else 'was NOT'} "
+                    "applied). Gates outside the original qelib1.inc -- sx, sxdg, cp -- must be "
+                    "rewritten; that is what the default --lower path does."
                 )
 
             # Extract executable composite circuit from the compiled IR
@@ -200,12 +211,49 @@ class ExaTNBackend:
                     "tnqvm_visitor": self.visitor,
                     "xacc_compiler": self.compiler_name,
                     "reverse_bits": self.reverse_bits,
+                    "lowered": lowered,
                 }
             )
 
         except Exception as e:
             logger.error(f"Error running {qasm_path}: {e}")
             raise
+
+    def _lower_qasm(self, qasm_text: str, qasm_path) -> "tuple[str, bool]":
+        """Rewrite ``qasm_text`` into the gate subset ``qelib1.inc`` actually declares.
+
+        The banks in this repo are written as unlowered proxysim IR, so they contain
+        ``sx``/``sxdg`` (and ``cp`` once the crosstalk angle is nonzero), none of which the
+        original OpenQASM 2.0 header declares -- staq rejects them. ``lower_for_c3pq``
+        already performs exactly the substitutions needed (``sx`` -> ``rx(pi/2)``, ``s`` ->
+        ``rz(pi/2)``, ``i`` dropped), each exact up to a global phase and therefore leaving
+        the measurement distribution unchanged bit for bit; the ``qelib1`` dialect then
+        spells the surviving ``cp`` as ``cu1``.
+
+        Returns ``(source, lowered)``. A file this package cannot parse is passed through
+        untouched rather than failed: it may still be something XACC accepts, and the
+        compile error is a better diagnostic than a parse error from here. The warning is
+        emitted once per backend -- ``circuit_from_qasm`` needs qiskit, so if that is
+        missing the failure is systematic and one line says as much as thousands.
+        """
+        from proxysim.c3pq import lower_for_c3pq
+        from proxysim.circuit import circuit_from_qasm
+        from proxysim.qasm import circuit_to_qasm
+
+        try:
+            circuit, measured = circuit_from_qasm(qasm_text)
+            return circuit_to_qasm(lower_for_c3pq(circuit), measured=measured,
+                                   dialect="qelib1"), True
+        except Exception as e:
+            if not self._lower_warned:
+                self._lower_warned = True
+                logger.warning(
+                    f"Could not lower {qasm_path} ({e}); passing the original source to "
+                    "XACC and suppressing further lowering warnings. If the bank contains "
+                    "sx/sxdg/cp this will fail at compile -- check that qiskit is "
+                    "importable, since circuit_from_qasm needs it."
+                )
+            return qasm_text, False
 
     @staticmethod
     def _extract_composite(ir) -> Any:

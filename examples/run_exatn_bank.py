@@ -30,6 +30,7 @@ class RunManifest:
     shots: int
     visitor: str
     compiler: Optional[str] = None
+    lowered: bool = True
     completed: List[str] = None # List of qasm relative paths
     failed: Dict[str, str] = None # qasm path -> error
     skipped: List[str] = None
@@ -206,6 +207,14 @@ def main():
              "indexes qubit 0 as the LSB, so reversing is the default; use this only if "
              "--check-environment reports a bit-order mismatch.",
     )
+    parser.add_argument(
+        "--no-lower",
+        action="store_true",
+        help="Hand XACC the QASM exactly as written. By default each circuit is rewritten "
+             "into the gate subset qelib1.inc declares (sx -> rx(pi/2) and so on, each "
+             "exact up to a global phase), because the banks here are unlowered proxysim "
+             "IR and staq rejects sx/sxdg/cp.",
+    )
     parser.add_argument("--manifest", type=str, default="manifest.json", help="Manifest filename relative to output-dir")
     parser.add_argument("--fail-fast", action="store_true", help="Exit immediately on first failure")
     parser.add_argument("--dry-run", action="store_true", help="List files to be processed without executing")
@@ -232,7 +241,8 @@ def main():
         results_dir=str(out_dir),
         qasm_bank=str(bank_path),
         shots=args.shots,
-        visitor=args.visitor
+        visitor=args.visitor,
+        lowered=not args.no_lower,
     )
 
     # Discover files
@@ -249,8 +259,10 @@ def main():
             visitor=args.visitor,
             seed=args.seed,
             reverse_bits=not args.no_reverse_bits,
+            lower=not args.no_lower,
         )
         manifest.compiler = backend.compiler_name
+        manifest.lowered = backend.lower
     except Exception as e:
         logger.error(f"Backend initialization failed: {e}")
         sys.exit(1)

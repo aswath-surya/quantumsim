@@ -283,7 +283,7 @@ def clifford_efs(manifest, cfg, noise, decays, seed=1):
     return out
 
 
-def check_ef_consistency(c3pq_ef, cliff_ef, sigma=4.0):
+def check_ef_consistency(c3pq_ef, cliff_ef, sigma=4.0, label="c3pq"):
     """Check [5]: the two e_F paths must agree within their combined error bars.
 
     This is the check that makes using the Clifford path honest. It is one-sided in cost
@@ -303,7 +303,9 @@ def check_ef_consistency(c3pq_ef, cliff_ef, sigma=4.0):
         worst = max(worst, d - tol)
     for key, ae, as_, be, bs, d, tol in rows:
         flag = "" if d <= tol else "   <-- disagrees"
-        print(f"  n={key[0]} {key[1]:>10} cycle {key[2]}:  c3pq {ae:.4f}({as_:.4f})"
+        # `label` names the non-Clifford path, for the same reason `figure` takes `source`:
+        # exatn_analyze.py reuses this check and its numbers are not C-3PQ's.
+        print(f"  n={key[0]} {key[1]:>10} cycle {key[2]}:  {label} {ae:.4f}({as_:.4f})"
               f"   clifford {be:.4f}({bs:.4f})   |d|={d:.4f} tol={tol:.4f}{flag}")
     if not rows:
         print("  no cycle has both paths, skipped")
@@ -427,7 +429,7 @@ def bounds_for(n, mode, depths, efs, ro_fid, ro_std, cycles):
     return np.array([b["error"] for b in out]), np.array([b["std"] for b in out])
 
 
-def figure(path, n, modes, depths, series, title_extra):
+def figure(path, n, modes, depths, series, title_extra, source="C-3PQ exact trajectories"):
     fig, axes = plt.subplots(1, len(modes), figsize=(6 * len(modes), 4.8), sharey=True,
                              squeeze=False)
     for ax, mode in zip(axes[0], modes):
@@ -452,8 +454,11 @@ def figure(path, n, modes, depths, series, title_extra):
         ax.grid(True, which="both", alpha=0.15)
         ax.legend(frameon=False, fontsize=8.5)
     axes[0][0].set_ylabel("probability of an error (TVD)")
-    fig.suptitle(f"Bounding circuit error from cycle benchmarking (n={n}, C-3PQ "
-                 f"exact trajectories, {title_extra})", fontsize=12)
+    # `source` names what produced the probability vectors. It is a parameter rather than
+    # a constant because exatn_analyze.py reuses this figure for sampled ExaTN runs, where
+    # "exact trajectories" would be a false claim on the plot itself.
+    fig.suptitle(f"Bounding circuit error from cycle benchmarking (n={n}, {source}, "
+                 f"{title_extra})", fontsize=12)
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
