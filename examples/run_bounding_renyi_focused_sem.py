@@ -1078,8 +1078,8 @@ def figure_renyi_factors_each_depth(depths, ns, sc, all_fits):
             exm, exsd, exsem = _mean_sd_sem(sc[mode]["uniform_tvd"][di])
             ax.errorbar(ns, s2m, yerr=s2sem, fmt="o", capsize=3,
                         color=COLORS["renyi"], label=r"$S_2$ ensemble mean $\pm$ SEM")
-            ax.errorbar(ns, exm, yerr=exsem, fmt="^", capsize=3,
-                        color=COLORS["exact"], label=r"$D_{TV}(p,u)$ ensemble mean $\pm$ SEM")
+            #ax.errorbar(ns, exm, yerr=exsem, fmt="^", capsize=3,
+            #            color=COLORS["exact"], label=r"$D_{TV}(p,u)$ ensemble mean $\pm$ SEM")
             g = np.linspace(ns.min(), ns.max(), 300)
             fs2 = all_fits[int(depth)][mode]["s2"]
             if fs2["ok"]:

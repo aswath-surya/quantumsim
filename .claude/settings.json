@@ -10,7 +10,11 @@
       "Read(//opt/homebrew/bin/**)",
       "Bash(conda env *)",
       "Bash(.venv/bin/python -c \"import stim, qiskit, scipy, matplotlib; print\\('ok', scipy.__version__\\)\")",
-      "Bash(time ../.venv/bin/python -c ' *)"
+      "Bash(time ../.venv/bin/python -c ' *)",
+      "Bash(mkdir -p /tmp/claude-qasm-cb && find . -path ./.git -prune -o -type f -print | sort > /tmp/claude-qasm-cb/paths_before.txt && wc -l /tmp/claude-qasm-cb/paths_before.txt)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
     ]
   }
 }
